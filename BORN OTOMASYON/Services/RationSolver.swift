@@ -143,127 +143,78 @@ enum RationSolver {
             }
         }
 
-        let m = rows.count
-        // Total columns: n (x) + m (slacks for ≤) + artCount (artificials for = and ≥)
-        let artRows = rows.filter { $0.needsArtificial }
-        let artCount = artRows.count
-        let slackCount = m   // one slack/surplus per row (surplus rows get -1 coeff)
-        let totalVars = n + slackCount + artCount
+        let m         = rows.count
+        let artCount  = rows.filter { $0.needsArtificial }.count
+        let cols      = n + m + artCount + 1
+        let objRow    = m
 
-        // ── Build tableau ─────────────────────────────────────────────────────
-        // Columns: [x0..xn-1 | s0..sm-1 | a0..aArt-1 | rhs]
-
-        let cols = totalVars + 1
-        var T = [[Double]](repeating: [Double](repeating: 0, count: cols), count: m + 1)  // last row = objective
-
+        // ── Flat row-major tableau: cache-friendly tek [Double] ───────────────
+        var T    = [Double](repeating: 0, count: (m + 1) * cols)
+        var basis = [Int](repeating: -1, count: m)
         var artIdx = 0
         for (r, row) in rows.enumerated() {
-            // x coefficients
-            for j in 0..<n { T[r][j] = row.coeffs[j] }
+            let base = r * cols
+            for j in 0..<n { T[base + j] = row.coeffs[j] }
             let sCol = n + r
             if row.needsArtificial {
-                // equality or ≥: surplus with -1 and artificial with +1
-                T[r][sCol] = -1  // surplus (won't hurt if rhs=0)
-                let aCol = n + slackCount + artIdx
-                T[r][aCol] = 1
+                T[base + sCol]       = -1
+                T[base + n + m + artIdx] = 1
+                basis[r]             = n + m + artIdx
                 artIdx += 1
             } else {
-                // ≤: slack with +1
-                T[r][sCol] = 1
+                T[base + sCol] = 1
+                basis[r]       = sCol
             }
-            T[r][cols - 1] = row.rhs
+            T[base + cols - 1] = row.rhs
         }
 
-        // ── Phase 1: minimise sum of artificials (big-M via objective penalisation) ──
-        let bigM = 1_000_000.0
-        // Objective row (minimise cost - BigM * artificials)
-        // Cost = Σ price[i] * x[i]  (price in ₺/ton, x in %)
-        for i in 0..<n {
-            T[m][i] = active[i].priceTLPerTon / 100.0  // ₺ per % point per ton
-        }
-        // Add big-M penalty for artificials
-        for a in 0..<artCount {
-            T[m][n + slackCount + a] = bigM
-        }
-
-        // Identify initial basis: artificial variables (and slacks for ≤ rows)
-        var basis = [Int](repeating: -1, count: m)
-        artIdx = 0
-        for (r, row) in rows.enumerated() {
-            if row.needsArtificial {
-                basis[r] = n + slackCount + artIdx
-                artIdx += 1
-            } else {
-                basis[r] = n + r  // slack column
-            }
-        }
-
-        // Adjust objective for initial basis (subtract big-M * each artificial row)
-        for r in 0..<m {
-            let bv = basis[r]
-            if bv >= n + slackCount {
-                // artificial in basis: subtract M * this row from objective
-                for j in 0..<cols {
-                    T[m][j] -= bigM * T[r][j]
-                }
-            }
+        let bigM    = 1_000_000.0
+        let objBase = objRow * cols
+        for i in 0..<n { T[objBase + i] = active[i].priceTLPerTon / 100.0 }
+        for a in 0..<artCount { T[objBase + n + m + a] = bigM }
+        for r in 0..<m where basis[r] >= n + m {
+            let base = r * cols
+            for j in 0..<cols { T[objBase + j] -= bigM * T[base + j] }
         }
 
         // ── Simplex iterations ────────────────────────────────────────────────
-        let maxIter = 2000
+        let maxIter = 1500
         for _ in 0..<maxIter {
-            // Find most negative reduced cost (pivot column)
-            var pivCol = -1
-            var minRC = -1e-9
+            var pivCol = -1; var minRC = -1e-9
             for j in 0..<(cols - 1) {
-                if T[m][j] < minRC {
-                    minRC = T[m][j]
-                    pivCol = j
-                }
+                let rc = T[objBase + j]; if rc < minRC { minRC = rc; pivCol = j }
             }
-            guard pivCol >= 0 else { break }  // optimal
+            guard pivCol >= 0 else { break }
 
-            // Minimum ratio test (pivot row)
-            var pivRow = -1
-            var minRatio = Double.infinity
+            var pivRow = -1; var minRatio = Double.infinity
             for r in 0..<m {
-                guard T[r][pivCol] > 1e-10 else { continue }
-                let ratio = T[r][cols - 1] / T[r][pivCol]
-                if ratio < minRatio - 1e-12 {
-                    minRatio = ratio
-                    pivRow = r
-                }
+                let e = T[r * cols + pivCol]; guard e > 1e-10 else { continue }
+                let ratio = T[r * cols + cols - 1] / e
+                if ratio < minRatio - 1e-12 { minRatio = ratio; pivRow = r }
             }
-            guard pivRow >= 0 else {
-                return infeasible("LP sınırsız (unbounded).")
-            }
+            guard pivRow >= 0 else { return infeasible("LP sınırsız.") }
 
-            // Pivot
-            let piv = T[pivRow][pivCol]
-            for j in 0..<cols { T[pivRow][j] /= piv }
-            for r in 0...m {
-                guard r != pivRow else { continue }
-                let factor = T[r][pivCol]
-                guard abs(factor) > 1e-15 else { continue }
-                for j in 0..<cols { T[r][j] -= factor * T[pivRow][j] }
+            let pivBase = pivRow * cols
+            let pivVal  = T[pivBase + pivCol]
+            for j in 0..<cols { T[pivBase + j] /= pivVal }
+            T.withUnsafeMutableBufferPointer { buf in
+                for r in 0...m {
+                    guard r != pivRow else { continue }
+                    let fac = buf[r * cols + pivCol]; guard abs(fac) > 1e-15 else { continue }
+                    let rb = r * cols
+                    for j in 0..<cols { buf[rb + j] -= fac * buf[pivBase + j] }
+                }
             }
             basis[pivRow] = pivCol
         }
 
         // ── Extract solution ──────────────────────────────────────────────────
         var x = [Double](repeating: 0, count: n)
-        for r in 0..<m {
-            let b = basis[r]
-            if b < n { x[b] = T[r][cols - 1] }
-        }
+        for r in 0..<m { let b = basis[r]; if b < n { x[b] = T[r * cols + cols - 1] } }
 
-        // Check for remaining artificials in basis (infeasible)
         for r in 0..<m {
-            if basis[r] >= n + slackCount {
-                let artVal = T[r][cols - 1]
-                if artVal > 1e-6 {
-                    return infeasible("Kısıtlar sağlanamadı — uygun çözüm yok. (art=\(String(format:"%.4f",artVal)))")
-                }
+            if basis[r] >= n + m, T[r * cols + cols - 1] > 1e-6 {
+                return infeasible("Kısıtlar sağlanamadı.")
             }
         }
 

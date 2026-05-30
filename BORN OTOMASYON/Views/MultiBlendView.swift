@@ -238,39 +238,55 @@ struct MultiBlendDetailView: View {
     // MARK: - Body
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            List {
-                costSummarySection
-                formulasSection
-                ingredientsSection
-            }
-            .listStyle(.insetGrouped)
-
-            // ── Çözülüyor overlay ─────────────────────────────────────────────
-            if isCalculating {
-                VStack(spacing: 14) {
-                    SolveProgressRing()
-                    VStack(spacing: 4) {
-                        Text("Çözülüyor…")
-                            .font(.subheadline.bold())
-                            .foregroundStyle(.white)
-                        if let name = currentlySolvingName {
-                            Text(name)
-                                .font(.caption2)
-                                .foregroundStyle(.white.opacity(0.75))
-                                .lineLimit(1)
-                        }
-                    }
-                }
-                .padding(.horizontal, 28)
-                .padding(.vertical, 18)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
-                .shadow(color: .black.opacity(0.3), radius: 12, y: 6)
-                .padding(.bottom, 28)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
+        List {
+            costSummarySection
+            formulasSection
+            ingredientsSection
         }
-        .animation(.easeInOut(duration: 0.25), value: isCalculating)
+        .listStyle(.insetGrouped)
+        .safeAreaInset(edge: .bottom) {
+            HStack(spacing: 10) {
+                // ── Kaydet ──────────────────────────────────────────────────
+                Button { try? context.save() } label: {
+                    Text("Kaydet")
+                        .font(.subheadline.bold()).foregroundStyle(.white)
+                        .padding(.horizontal, 18).padding(.vertical, 13)
+                        .frame(maxWidth: .infinity)
+                        .background(Color.blue, in: Capsule())
+                        .shadow(color: .blue.opacity(0.4), radius: 8)
+                }
+                // ── Hesapla ──────────────────────────────────────────────────
+                Button { Task { await calculateAll() } } label: {
+                    HStack(spacing: 6) {
+                        if isCalculating {
+                            ProgressView().progressViewStyle(.circular).scaleEffect(0.8).tint(.white)
+                        } else {
+                            Image(systemName: "cpu").font(.subheadline.bold())
+                        }
+                        Text(isCalculating ? "Hesaplanıyor…" : "Hesapla").font(.subheadline.bold())
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18).padding(.vertical, 13)
+                    .frame(maxWidth: .infinity)
+                    .background((isCalculating || groupFormulas.isEmpty) ? Color.gray.opacity(0.6) : Color.green, in: Capsule())
+                    .shadow(color: .green.opacity(isCalculating ? 0 : 0.5), radius: 8)
+                }
+                .disabled(isCalculating || groupFormulas.isEmpty)
+                .animation(.easeInOut(duration: 0.2), value: isCalculating)
+                // ── Üretime Kaydet ───────────────────────────────────────────
+                Button { showProductionConfirm = true } label: {
+                    Text("Üretime\nKaydet")
+                        .font(.caption.bold()).multilineTextAlignment(.center).foregroundStyle(.white)
+                        .padding(.horizontal, 14).padding(.vertical, 10)
+                        .frame(maxWidth: .infinity)
+                        .background((groupFormulas.isEmpty || isCalculating) ? Color.gray.opacity(0.5) : Color.indigo, in: Capsule())
+                        .shadow(color: .indigo.opacity(groupFormulas.isEmpty || isCalculating ? 0 : 0.4), radius: 8)
+                }
+                .disabled(groupFormulas.isEmpty || isCalculating)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(.ultraThinMaterial)
+        }
         .navigationTitle(group.name)
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { }
@@ -280,46 +296,22 @@ struct MultiBlendDetailView: View {
                     EditButton()
                     if hasUnavailableIngredients {
                         Button { activateAllIngredients() } label: {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                         }
                     }
                 }
             }
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
-                    Button {
-                        showProductionConfirm = true
-                    } label: {
-                        Label("Üretime Kaydet", systemImage: "checkmark.seal.fill")
-                            .font(.caption.bold())
-                            .foregroundStyle(.indigo)
+                    Button { showSend = true } label: {
+                        Image(systemName: "paperplane.fill").foregroundStyle(.orange)
                     }
                     .disabled(groupFormulas.isEmpty || isCalculating)
-                    Button {
-                        showSend = true
-                    } label: {
-                        Image(systemName: "paperplane.fill")
-                            .foregroundStyle(.orange)
-                    }
-                    .disabled(groupFormulas.isEmpty || isCalculating)
-                    Button {
-                        showReport = true
-                    } label: {
+                    Button { showReport = true } label: {
                         Image(systemName: "square.and.arrow.up")
                     }
                     .disabled(groupFormulas.isEmpty)
                 }
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    Task { await calculateAll() }
-                } label: {
-                    Label("Hesapla", systemImage: "cpu")
-                        .labelStyle(.titleAndIcon)
-                }
-                .disabled(isCalculating || groupFormulas.isEmpty)
-                .tint(.green)
             }
         }
         .sheet(item: $editContext) { ctx in
@@ -946,6 +938,7 @@ struct MultiBlendDetailView: View {
             let combos:    [BFCombination]
             let totalKg:   Double
             let conflicts: [String]
+            let snap:      [IngSnap]   // kütüphane snapshot — Task.detached'a güvenle geçer
         }
         struct SolveOut: @unchecked Sendable {
             let code:       String
@@ -983,13 +976,14 @@ struct MultiBlendDetailView: View {
                 }
             }
             workItems.append(SolveWork(
-                code:     formula.code,
-                origIngs: formula.ingredients,
-                workIngs: wIngs,
-                workCons: formula.constraints,
-                combos:   formula.combinations,
-                totalKg:  formula.totalKg,
-                conflicts: conflicts
+                code:      formula.code,
+                origIngs:  formula.ingredients,
+                workIngs:  wIngs,
+                workCons:  formula.constraints,
+                combos:    formula.combinations,
+                totalKg:   formula.totalKg,
+                conflicts: conflicts,
+                snap:      libSnap
             ))
         }
 
@@ -1001,24 +995,26 @@ struct MultiBlendDetailView: View {
 
         await withTaskGroup(of: SolveOut.self) { grp in
             for item in workItems {
-                let snap = libSnap
-                grp.addTask(priority: .userInitiated) {
-                    let vm        = FormulaEditorVM()
-                    vm.ingredients = item.workIngs
-                    vm.constraints = item.workCons
-                    vm.combinations = item.combos
-                    vm.totalKgStr  = String(format: "%.0f", item.totalKg)
-                    vm.loadPricesFromLibrary(snap)
-                    vm.solve(library: snap)
-                    return SolveOut(
-                        code:       item.code,
-                        origIngs:   item.origIngs,
-                        resultIngs: vm.ingredients,
-                        resultCons: vm.constraints,
-                        lastSolve:  vm.lastSolve,
-                        message:    vm.solveMessage,
-                        conflicts:  item.conflicts
-                    )
+                // Task.detached — @MainActor bağımsız, tüm formüller PARALEL çalışır
+                grp.addTask {
+                    await Task.detached(priority: .userInitiated) {
+                        let vm         = FormulaEditorVM()
+                        vm.ingredients = item.workIngs
+                        vm.constraints = item.workCons
+                        vm.combinations = item.combos
+                        vm.totalKgStr  = String(format: "%.0f", item.totalKg)
+                        vm.loadPricesFromLibrary(item.snap)
+                        vm.solve(library: item.snap)
+                        return SolveOut(
+                            code:       item.code,
+                            origIngs:   item.origIngs,
+                            resultIngs: vm.ingredients,
+                            resultCons: vm.constraints,
+                            lastSolve:  vm.lastSolve,
+                            message:    vm.solveMessage,
+                            conflicts:  item.conflicts
+                        )
+                    }.value
                 }
             }
             for await out in grp { outputs.append(out) }
@@ -1026,11 +1022,10 @@ struct MultiBlendDetailView: View {
 
         currentlySolvingName = nil
 
-        // ── Sonuçları ana thread'de formüllere yaz ───────────────────────────
+        // ── Sonuçları TOPLU yazma — tek seferde tüm UI güncellenir ────────────
+        var newSolveResults = solveResults
         for out in outputs {
-            await Task.yield()
             guard let formula = groupFormulas.first(where: { $0.code == out.code }) else { continue }
-            // Orijinal min/max'ı geri yükle (aylık limitler formülde kalıcı olmamalı)
             var finalIngs = out.resultIngs
             for i in finalIngs.indices {
                 let c = finalIngs[i].code
@@ -1050,10 +1045,11 @@ struct MultiBlendDetailView: View {
             let base     = out.message ?? ""
             let msg      = out.conflicts.isEmpty ? base
                 : out.conflicts.joined(separator: "\n") + (base.isEmpty ? "" : "\n" + base)
-            solveResults[out.code] = SolveResult(ok: feasible,
-                                                 cost: formula.lastSolve?.costPerTon ?? 0,
-                                                 message: msg)
+            newSolveResults[out.code] = SolveResult(ok: feasible,
+                                                    cost: formula.lastSolve?.costPerTon ?? 0,
+                                                    message: msg)
         }
+        solveResults = newSolveResults  // tek render tetikler
 
         // ── Post-solve: aylık MIN/MAX doğrulaması (limit varsa) ───────────────
         if !limitsMap.isEmpty, totalTons > 0 {
@@ -1104,7 +1100,8 @@ struct MultiBlendDetailView: View {
             }
         }
 
-        try? context.save()
+        // context.save() kasıtlı yok — CloudKit WAL checkpoint'ini önler.
+        // "Kaydet" butonu ile kaydedilir; onDisappear'da da otomatik kaydedilir.
         await Task.yield()
         syncIngredientAvailability()
         isCalculating = false
@@ -1120,16 +1117,10 @@ struct MultiBlendDetailView: View {
                 }
             }
         }
-        var changed = false
-        for ing in library {
-            // Only deactivate ingredients that are not used in any formula.
-            // NEVER auto-activate — that is the user's manual decision.
-            if !usedCodes.contains(ing.code) && ing.isAvailable {
-                ing.isAvailable = false
-                changed = true
-            }
+        for ing in library where !usedCodes.contains(ing.code) && ing.isAvailable {
+            ing.isAvailable = false
         }
-        if changed { try? context.save() }
+        // context.save() yok — CloudKit sync tetiklenmez
     }
 }
 
