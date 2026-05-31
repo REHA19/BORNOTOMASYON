@@ -104,6 +104,7 @@ struct MultiBlendDetailView: View {
     @State private var showSend               = false
     @State private var showProductionConfirm  = false
     @State private var formulaSort:           FormulaSort = .tonDesc
+    @State private var pickedProductionMonth: Date?                 = nil
 
     enum FormulaSort: String, CaseIterable {
         case tonDesc  = "Tonaj ↓"
@@ -233,6 +234,27 @@ struct MultiBlendDetailView: View {
         let cal   = Calendar.current
         let start = cal.date(from: cal.dateComponents([.year, .month], from: Date())) ?? Date()
         return cal.date(byAdding: .month, value: -1, to: start) ?? start
+    }
+
+    // Son 24 ay listesi (en yeni → en eski)
+    private var availableProductionMonths: [Date] {
+        let cal     = Calendar.current
+        let current = cal.date(from: cal.dateComponents([.year, .month], from: Date())) ?? Date()
+        var months: [Date] = []
+        var cursor  = current
+        for _ in 0..<24 {
+            months.append(cursor)
+            guard let prev = cal.date(byAdding: .month, value: -1, to: cursor) else { break }
+            cursor = prev
+        }
+        return months
+    }
+
+    private func monthLabel(_ date: Date) -> String {
+        let fmt = DateFormatter()
+        fmt.locale     = Locale(identifier: "tr_TR")
+        fmt.dateFormat = "MMMM yyyy"
+        return fmt.string(from: date).capitalized
     }
 
     // MARK: - Body
@@ -429,12 +451,36 @@ struct MultiBlendDetailView: View {
                 if productionVM.isLoading {
                     ProgressView().scaleEffect(0.7)
                 } else {
-                    Button {
-                        productionVM.selectedMonth = previousMonth
-                        Task { await productionVM.load() }
-                    } label: {
-                        Label("Cetvelden Yükle", systemImage: "arrow.down.doc")
-                            .font(.caption)
+                    HStack(spacing: 4) {
+                        Button {
+                            let month = pickedProductionMonth ?? previousMonth
+                            productionVM.selectedMonth = month
+                            Task { await productionVM.load() }
+                        } label: {
+                            Label("Cetvelden Yükle", systemImage: "arrow.down.doc")
+                                .font(.caption)
+                        }
+                        Menu {
+                            ForEach(availableProductionMonths, id: \.self) { month in
+                                Button {
+                                    pickedProductionMonth = month
+                                    productionVM.selectedMonth = month
+                                    Task { await productionVM.load() }
+                                } label: {
+                                    HStack {
+                                        Text(monthLabel(month))
+                                        if let picked = pickedProductionMonth,
+                                           Calendar.current.isDate(picked, equalTo: month, toGranularity: .month) {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "calendar")
+                                .font(.caption)
+                                .foregroundStyle(pickedProductionMonth != nil ? .blue : .secondary)
+                        }
                     }
                 }
                 Button { showAdder = true } label: {
@@ -526,6 +572,32 @@ struct MultiBlendDetailView: View {
                     } else if formula.lastSolve != nil {
                         Image(systemName: "clock.arrow.circlepath")
                             .foregroundStyle(.secondary).font(.caption)
+                    }
+                }
+            }
+            // Hammadde değişimi — tüm değişen hammaddeler, artanlar yeşil / azalanlar kırmızı
+            if solveResults[formula.code] != nil {
+                let changes = formula.ingredients
+                    .filter { abs($0.mixPct - $0.previousMixPct) >= 0.5 && $0.previousMixPct > 0 }
+                    .sorted { lhs, rhs in
+                        let ld = lhs.mixPct - lhs.previousMixPct
+                        let rd = rhs.mixPct - rhs.previousMixPct
+                        if (ld > 0) != (rd > 0) { return ld > 0 }  // artanlar önce
+                        return abs(ld) > abs(rd)
+                    }
+                if !changes.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(changes), id: \.id) { ing in
+                            let diff = ing.mixPct - ing.previousMixPct
+                            HStack(spacing: 3) {
+                                Image(systemName: diff > 0 ? "arrow.up" : "arrow.down")
+                                    .font(.system(size: 8, weight: .bold))
+                                Text("\(String(ing.name.prefix(14))): \(String(format: "%+.1f%%", diff))")
+                                    .font(.system(size: 10))
+                                    .lineLimit(1)
+                            }
+                            .foregroundStyle(diff > 0 ? .green : .red)
+                        }
                     }
                 }
             }
