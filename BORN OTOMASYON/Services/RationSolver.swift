@@ -29,6 +29,10 @@ struct SolverResult {
     let costPerTon:        Double
     let nutrientValues:    [String: Double]
     let message:           String
+    // Sensitivity — rasyona girmeyen hammadde için gereken fiyat düşüşü (₺/ton)
+    var reducedCosts:      [String: Double] = [:]
+    // Sensitivity — rasyondaki hammadde için maksimum fiyat artışı (₺/ton, ∞ = sınırsız)
+    var costRangeIncreases: [String: Double] = [:]
 }
 
 // MARK: - Revised Simplex (minimisation, equality form via Big-M)
@@ -242,12 +246,43 @@ enum RationSolver {
             nutValues[con.key] = val
         }
 
+        // ── Sensitivity: reduced costs & cost ranges ─────────────────────────
+        let basisSet = Set(basis)
+        var reducedCosts:       [String: Double] = [:]
+        var costRangeIncreases: [String: Double] = [:]
+
+        for j in 0..<n {
+            if basisSet.contains(j) {
+                // Temel değişken: rasyonda kullanılıyor → cost range (max fiyat artışı)
+                guard let r = basis.firstIndex(of: j) else { continue }
+                var maxIncrease = Double.infinity
+                for k in 0..<(n + m) {  // artificials hariç
+                    guard !basisSet.contains(k) else { continue }
+                    let tVal = T[r * cols + k]
+                    let oVal = T[objBase + k]
+                    if tVal > 1e-9 {
+                        let limit = oVal / tVal * 100.0  // ₺/ton cinsinden
+                        if limit > -1e-9 { maxIncrease = min(maxIncrease, max(0, limit)) }
+                    }
+                }
+                costRangeIncreases[active[j].code] = maxIncrease
+            } else {
+                // Temel olmayan: rasyonda değil → reduced cost (gerekli fiyat düşüşü)
+                let rc = T[objBase + j]
+                if rc > 1e-9 {
+                    reducedCosts[active[j].code] = rc * 100.0  // ₺/ton cinsinden
+                }
+            }
+        }
+
         return SolverResult(
-            isFeasible:        true,
-            percentagesByCode: pctByCode,
-            costPerTon:        costPerTon,
-            nutrientValues:    nutValues,
-            message:           "Çözüm başarılı. Toplam: \(String(format:"%.2f",sumX))%"
+            isFeasible:         true,
+            percentagesByCode:  pctByCode,
+            costPerTon:         costPerTon,
+            nutrientValues:     nutValues,
+            message:            "Çözüm başarılı. Toplam: \(String(format:"%.2f",sumX))%",
+            reducedCosts:       reducedCosts,
+            costRangeIncreases: costRangeIncreases
         )
     }
 

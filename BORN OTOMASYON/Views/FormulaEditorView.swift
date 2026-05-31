@@ -400,11 +400,13 @@ final class FormulaEditorVM {
         let finalMsg = msgs.joined(separator: "\n")
 
         lastSolve = BFSolveResult(
-            percentagesByCode: result.percentagesByCode,
-            costPerTon:        result.costPerTon,
-            nutrientValues:    result.nutrientValues,
-            isFeasible:        result.isFeasible && !anyConstraintRelaxed,
-            message:           finalMsg
+            percentagesByCode:  result.percentagesByCode,
+            costPerTon:         result.costPerTon,
+            nutrientValues:     result.nutrientValues,
+            isFeasible:         result.isFeasible && !anyConstraintRelaxed,
+            message:            finalMsg,
+            reducedCosts:       result.reducedCosts,
+            costRangeIncreases: result.costRangeIncreases
         )
         solveMessage = finalMsg
         isSolving    = false

@@ -107,10 +107,13 @@ struct BFCombination: Codable, Identifiable, Hashable {
 }
 
 struct BFSolveResult: Codable {
-    var percentagesByCode: [String: Double]  // code → %
-    var costPerTon:        Double
-    var nutrientValues:    [String: Double]
-    var isFeasible:        Bool
-    var message:           String
-    var solvedAt:          Date = Date()
+    var percentagesByCode:  [String: Double]  // code → %
+    var costPerTon:         Double
+    var nutrientValues:     [String: Double]
+    var isFeasible:         Bool
+    var message:            String
+    var solvedAt:           Date    = Date()
+    // Sensitivity — gölge fiyat analizi
+    var reducedCosts:       [String: Double] = [:]   // rasyona girmeyen: gerekli fiyat düşüşü ₺/ton
+    var costRangeIncreases: [String: Double] = [:]   // rasyondaki: maks fiyat artışı ₺/ton
 }
