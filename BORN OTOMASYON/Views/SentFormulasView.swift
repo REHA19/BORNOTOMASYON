@@ -5,28 +5,51 @@ struct SentFormulasView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \SendRecord.sentAt, order: .reverse) private var records: [SendRecord]
 
-    @State private var deleteTarget: SendRecord?
     @State private var showClearConfirm = false
-    @State private var clearMonth: String?
+    @State private var clearKey: String?
+    @State private var clearIsMonth = false
 
-    // MARK: - Gruplama: Ay → kayıtlar
+    // MARK: - Gruplama: Ay → Gün → Kayıtlar
 
-    private var grouped: [(month: String, date: Date, records: [SendRecord])] {
+    struct DayGroup: Identifiable {
+        let id:      String   // "22 Mayıs 2026"
+        let date:    Date
+        var records: [SendRecord]
+    }
+
+    struct MonthGroup: Identifiable {
+        let id:      String   // "Mayıs 2026"
+        let date:    Date
+        var days:    [DayGroup]
+        var allRecords: [SendRecord] { days.flatMap(\.records) }
+    }
+
+    private var grouped: [MonthGroup] {
         let cal = Calendar.current
-        var dict: [String: (date: Date, records: [SendRecord])] = [:]
+        var monthDict: [String: (date: Date, dayDict: [String: (date: Date, recs: [SendRecord])])] = [:]
 
         for rec in records {
-            let comps = cal.dateComponents([.year, .month], from: rec.sentAt)
-            let key   = monthKey(rec.sentAt)
-            let anchor = cal.date(from: comps) ?? rec.sentAt
-            if dict[key] == nil {
-                dict[key] = (date: anchor, records: [])
+            let mKey    = monthKey(rec.sentAt)
+            let dKey    = dayKey(rec.sentAt)
+            let mAnchor = cal.date(from: cal.dateComponents([.year, .month], from: rec.sentAt)) ?? rec.sentAt
+            let dAnchor = cal.date(from: cal.dateComponents([.year, .month, .day], from: rec.sentAt)) ?? rec.sentAt
+
+            if monthDict[mKey] == nil {
+                monthDict[mKey] = (date: mAnchor, dayDict: [:])
             }
-            dict[key]!.records.append(rec)
+            if monthDict[mKey]!.dayDict[dKey] == nil {
+                monthDict[mKey]!.dayDict[dKey] = (date: dAnchor, recs: [])
+            }
+            monthDict[mKey]!.dayDict[dKey]!.recs.append(rec)
         }
 
-        return dict
-            .map { (month: $0.key, date: $0.value.date, records: $0.value.records) }
+        return monthDict
+            .map { mKey, mVal -> MonthGroup in
+                let days = mVal.dayDict
+                    .map { dKey, dVal in DayGroup(id: dKey, date: dVal.date, records: dVal.recs) }
+                    .sorted { $0.date > $1.date }
+                return MonthGroup(id: mKey, date: mVal.date, days: days)
+            }
             .sorted { $0.date > $1.date }
     }
 
@@ -35,6 +58,13 @@ struct SentFormulasView: View {
         fmt.locale     = Locale(identifier: "tr_TR")
         fmt.dateFormat = "MMMM yyyy"
         return fmt.string(from: date).capitalized
+    }
+
+    private func dayKey(_ date: Date) -> String {
+        let fmt = DateFormatter()
+        fmt.locale     = Locale(identifier: "tr_TR")
+        fmt.dateFormat = "d MMMM yyyy"
+        return fmt.string(from: date)
     }
 
     // MARK: - Body
@@ -57,6 +87,14 @@ struct SentFormulasView: View {
                     }
                 }
             }
+            .alert("Sil", isPresented: $showClearConfirm) {
+                Button("Tümünü Sil", role: .destructive) {
+                    if let key = clearKey { deleteByKey(key, isMonth: clearIsMonth) }
+                }
+                Button("Vazgeç", role: .cancel) {}
+            } message: {
+                Text("\(clearKey ?? "") tarihine ait tüm gönderim kayıtları silinecek.")
+            }
         }
     }
 
@@ -64,81 +102,94 @@ struct SentFormulasView: View {
 
     private var recordList: some View {
         List {
-            ForEach(grouped, id: \.month) { group in
+            ForEach(grouped) { month in
                 Section {
-                    ForEach(group.records) { rec in
-                        NavigationLink(destination: SentRecordDetailView(record: rec)) {
-                            RecordRow(record: rec)
-                        }
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            Button(role: .destructive) {
-                                modelContext.delete(rec)
-                                try? modelContext.save()
-                            } label: {
-                                Label("Sil", systemImage: "trash")
+                    ForEach(month.days) { day in
+                        DisclosureGroup {
+                            ForEach(day.records) { rec in
+                                NavigationLink(destination: SentRecordDetailView(record: rec)) {
+                                    RecordRow(record: rec)
+                                }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button(role: .destructive) {
+                                        modelContext.delete(rec)
+                                        try? modelContext.save()
+                                    } label: {
+                                        Label("Sil", systemImage: "trash")
+                                    }
+                                }
                             }
+                        } label: {
+                            dayLabel(day)
                         }
                     }
                 } header: {
-                    monthHeader(group)
+                    monthHeader(month)
                 }
             }
         }
         .listStyle(.insetGrouped)
     }
 
-    // MARK: - Month header
+    // MARK: - Gün etiketi
 
     @ViewBuilder
-    private func monthHeader(_ group: (month: String, date: Date, records: [SendRecord])) -> some View {
-        let successCount = group.records.filter(\.isSuccess).count
-        let failCount    = group.records.count - successCount
-
+    private func dayLabel(_ day: DayGroup) -> some View {
+        let success = day.records.filter(\.isSuccess).count
+        let fail    = day.records.count - success
         HStack(spacing: 8) {
-            Text(group.month)
+            Text(day.id)
                 .font(.subheadline.bold())
                 .foregroundStyle(.primary)
-                .textCase(nil)
-
             Spacer()
-
-            if successCount > 0 {
-                Label("\(successCount)", systemImage: "checkmark.circle.fill")
-                    .font(.caption.bold())
-                    .foregroundStyle(.green)
-                    .labelStyle(.titleAndIcon)
+            if success > 0 {
+                Label("\(success)", systemImage: "checkmark.circle.fill")
+                    .font(.caption.bold()).foregroundStyle(.green).labelStyle(.titleAndIcon)
             }
-            if failCount > 0 {
-                Label("\(failCount)", systemImage: "xmark.circle.fill")
-                    .font(.caption.bold())
-                    .foregroundStyle(.red)
-                    .labelStyle(.titleAndIcon)
+            if fail > 0 {
+                Label("\(fail)", systemImage: "xmark.circle.fill")
+                    .font(.caption.bold()).foregroundStyle(.red).labelStyle(.titleAndIcon)
             }
-
-            // Ay temizle butonu
             Button {
-                clearMonth = group.month
-                showClearConfirm = true
+                clearKey = day.id; clearIsMonth = false; showClearConfirm = true
             } label: {
-                Image(systemName: "trash")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Image(systemName: "trash").font(.caption).foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
         }
-        .alert("Ayı Temizle", isPresented: $showClearConfirm) {
-            Button("Tümünü Sil", role: .destructive) {
-                if let m = clearMonth {
-                    deleteMonth(m)
-                }
+    }
+
+    // MARK: - Ay başlığı
+
+    @ViewBuilder
+    private func monthHeader(_ month: MonthGroup) -> some View {
+        let all     = month.allRecords
+        let success = all.filter(\.isSuccess).count
+        let fail    = all.count - success
+        HStack(spacing: 8) {
+            Text(month.id)
+                .font(.subheadline.bold())
+                .foregroundStyle(.primary)
+                .textCase(nil)
+            Spacer()
+            if success > 0 {
+                Label("\(success)", systemImage: "checkmark.circle.fill")
+                    .font(.caption.bold()).foregroundStyle(.green).labelStyle(.titleAndIcon)
             }
-            Button("Vazgeç", role: .cancel) {}
-        } message: {
-            Text("\(clearMonth ?? "") ayına ait tüm gönderim kayıtları silinecek.")
+            if fail > 0 {
+                Label("\(fail)", systemImage: "xmark.circle.fill")
+                    .font(.caption.bold()).foregroundStyle(.red).labelStyle(.titleAndIcon)
+            }
+            Button {
+                clearKey = month.id; clearIsMonth = true; showClearConfirm = true
+            } label: {
+                Image(systemName: "trash").font(.caption).foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
         }
     }
 
-    // MARK: - Özet badge (toolbar)
+    // MARK: - Özet badge
 
     private var summaryBadge: some View {
         let total   = records.count
@@ -160,12 +211,13 @@ struct SentFormulasView: View {
         )
     }
 
-    // MARK: - Delete month
+    // MARK: - Silme
 
-    private func deleteMonth(_ month: String) {
-        for rec in records where monthKey(rec.sentAt) == month {
-            modelContext.delete(rec)
-        }
+    private func deleteByKey(_ key: String, isMonth: Bool) {
+        let toDelete = isMonth
+            ? records.filter { monthKey($0.sentAt) == key }
+            : records.filter { dayKey($0.sentAt) == key }
+        toDelete.forEach { modelContext.delete($0) }
         try? modelContext.save()
     }
 }
@@ -178,31 +230,24 @@ private struct RecordRow: View {
     private var timeStr: String {
         let fmt = DateFormatter()
         fmt.locale     = Locale(identifier: "tr_TR")
-        fmt.dateFormat = "d MMM HH:mm"
+        fmt.dateFormat = "HH:mm"
         return fmt.string(from: record.sentAt)
     }
 
     var body: some View {
         HStack(spacing: 12) {
-            // Başarı / hata ikonu
-            Image(systemName: record.isSuccess
-                  ? "checkmark.circle.fill" : "xmark.circle.fill")
+            Image(systemName: record.isSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
                 .font(.title2)
                 .foregroundStyle(record.isSuccess ? .green : .red)
 
             VStack(alignment: .leading, spacing: 3) {
-                // Rasyon adı (customName)
                 Text(record.customName.isEmpty ? record.formulaName : record.customName)
                     .font(.subheadline.bold())
-
-                // Formül kodu + kaynak
                 HStack(spacing: 6) {
                     Text("[\(record.formulaCode)]")
                         .font(.caption).foregroundStyle(.secondary)
                     sourceBadge
                 }
-
-                // Sunucu mesajı
                 if !record.serverMessage.isEmpty {
                     Text(record.serverMessage)
                         .font(.caption2)
@@ -233,8 +278,7 @@ private struct RecordRow: View {
         return Text(isSingle ? "Single" : "Multi")
             .font(.caption2.bold())
             .foregroundStyle(.white)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
+            .padding(.horizontal, 5).padding(.vertical, 2)
             .background(isSingle ? Color.mint : Color.indigo, in: Capsule())
     }
 }
@@ -257,10 +301,8 @@ struct SentRecordDetailView: View {
 
     var body: some View {
         List {
-            // ── Özet ──────────────────────────────────────────────────────────
             Section("Gönderim Bilgisi") {
-                infoRow("Rasyon Adı",
-                        record.customName.isEmpty ? record.formulaName : record.customName)
+                infoRow("Rasyon Adı", record.customName.isEmpty ? record.formulaName : record.customName)
                 if !record.customVersion.isEmpty {
                     infoRow("Dosya Adı / Versiyon", record.customVersion)
                 }
@@ -271,16 +313,13 @@ struct SentRecordDetailView: View {
                 infoRow("Parti",       String(format: "%.0f kg", record.totalKg))
 
                 HStack {
-                    Text("Durum")
-                        .foregroundStyle(.secondary)
+                    Text("Durum").foregroundStyle(.secondary)
                     Spacer()
                     Label(record.isSuccess ? "Başarılı" : "Hatalı",
-                          systemImage: record.isSuccess
-                              ? "checkmark.circle.fill" : "xmark.circle.fill")
+                          systemImage: record.isSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
                         .font(.subheadline.bold())
                         .foregroundStyle(record.isSuccess ? .green : .red)
                 }
-
                 if !record.serverMessage.isEmpty {
                     Text(record.serverMessage)
                         .font(.caption)
@@ -288,7 +327,6 @@ struct SentRecordDetailView: View {
                 }
             }
 
-            // ── Hammaddeler ────────────────────────────────────────────────────
             Section {
                 if ingredients.isEmpty {
                     Text("İçerik kaydedilmemiş (eski kayıt).")
@@ -297,23 +335,16 @@ struct SentRecordDetailView: View {
                     ForEach(Array(ingredients.enumerated()), id: \.offset) { i, snap in
                         HStack(spacing: 12) {
                             Text("\(i + 1)")
-                                .font(.caption2.bold())
-                                .foregroundStyle(.secondary)
+                                .font(.caption2.bold()).foregroundStyle(.secondary)
                                 .frame(width: 20, alignment: .trailing)
-
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(snap.name)
-                                    .font(.subheadline)
-                                Text("[\(snap.code)]")
-                                    .font(.caption).foregroundStyle(.secondary)
+                                Text(snap.name).font(.subheadline)
+                                Text("[\(snap.code)]").font(.caption).foregroundStyle(.secondary)
                             }
-
                             Spacer()
-
                             VStack(alignment: .trailing, spacing: 2) {
                                 Text(String(format: "%.2f kg", snap.amountKg))
-                                    .font(.subheadline.bold())
-                                    .foregroundStyle(.orange)
+                                    .font(.subheadline.bold()).foregroundStyle(.orange)
                                 Text(String(format: "%%%.2f", snap.mixPct))
                                     .font(.caption2).foregroundStyle(.secondary)
                             }
