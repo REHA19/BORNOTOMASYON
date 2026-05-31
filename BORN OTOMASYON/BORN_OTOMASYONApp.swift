@@ -34,28 +34,56 @@ struct BornOtomasyonApp: App {
 
     // MARK: - Container
 
+    private static let ckContainerID = "iCloud.com.rehabasmaci.BORNOTOM"
+
+    // CloudKit'te sync'lenen ana modeller (FormulaCostEntry henüz yeni — local-only)
+    private static let ckModels: [any PersistentModel.Type] = [
+        FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
+        FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self
+    ]
+
     private static func makeContainer() -> ModelContainer {
-        // Şema değişikliği sonrası eski store'u tek seferlik temizle
-        let resetKey = "swiftdata_reset_v9"
-        if !UserDefaults.standard.bool(forKey: resetKey) {
-            Self.nukeApplicationSupport()
-            UserDefaults.standard.set(true, forKey: resetKey)
+        // Auto-nuke kaldırıldı — veri güvenliği için
+
+        // 1. CloudKit (ana modeller) + Local (FormulaCostEntry ayrı store)
+        //    FormulaCostEntry'yi ayırmak loadIssueModelContainer hatasını çözer.
+        //    CloudKit bağlanınca eski tüm veriler (formüller, hammaddeler) geri iner.
+        do {
+            let fullSchema = Schema([
+                FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
+                FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self, FormulaCostEntry.self
+            ])
+            let ckConfig = ModelConfiguration(
+                "ckStore",
+                schema: Schema(ckModels),
+                cloudKitDatabase: .private(ckContainerID)
+            )
+            let localConfig = ModelConfiguration(
+                "localStore",
+                schema: Schema([FormulaCostEntry.self]),
+                cloudKitDatabase: .none
+            )
+            let c = try ModelContainer(for: fullSchema, configurations: [ckConfig, localConfig])
+            print("✅ BORN: CloudKit aktif + local store — veri senkronize ediliyor")
+            return c
+        } catch {
+            print("❌ BORN: CloudKit+local hatası: \(error)")
         }
 
-        // 1. CloudKit — schema'yı ModelConfiguration'a verme, SwiftData kendisi çıkarsın
+        // 2. CloudKit tek config (eski yöntem)
         do {
             let c = try ModelContainer(
                 for: FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
                     FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self, FormulaCostEntry.self,
-                configurations: ModelConfiguration(cloudKitDatabase: .automatic)
+                configurations: ModelConfiguration(cloudKitDatabase: .private(ckContainerID))
             )
-            print("✅ BORN: CloudKit container aktif — sync çalışıyor")
+            print("✅ BORN: CloudKit container aktif")
             return c
         } catch {
             print("❌ BORN: CloudKit hatası: \(error)")
         }
 
-        // 2. Yerel store
+        // 3. Yerel store
         do {
             let c = try ModelContainer(
                 for: FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
@@ -68,16 +96,11 @@ struct BornOtomasyonApp: App {
             print("❌ BORN: Yerel store hatası: \(error)")
         }
 
-        // 3. Temizle ve tekrar dene
-        Self.nukeApplicationSupport()
-        if let c = try? ModelContainer(
-            for: FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
-                FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self,
-            configurations: ModelConfiguration(cloudKitDatabase: .automatic)
-        ) { return c }
+        // 4. Son çare — nuke YOK
         return try! ModelContainer(
             for: FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
-                FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self
+                FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self, FormulaCostEntry.self,
+            configurations: ModelConfiguration(cloudKitDatabase: .none)
         )
     }
 
