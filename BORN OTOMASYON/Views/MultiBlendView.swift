@@ -109,6 +109,7 @@ struct MultiBlendDetailView: View {
     @State private var pickedProductionMonth: Date?                 = nil
     @State private var costHistoryFormula:    BlendFormula?         = nil
     @State private var nutrientCompFormula:   BlendFormula?         = nil
+    @State private var priceHistoryIngredient: FeedIngredient?      = nil
 
     enum FormulaSort: String, CaseIterable {
         case tonDesc  = "Tonaj ↓"
@@ -379,6 +380,9 @@ struct MultiBlendDetailView: View {
         }
         .sheet(item: $nutrientCompFormula) { formula in
             NutrientComparisonSheet(formula: formula)
+        }
+        .sheet(item: $priceHistoryIngredient) { ing in
+            PriceHistoryColoredSheet(ingredient: ing)
         }
         .onChange(of: productionVM.isLoading) { _, isLoading in
             if !isLoading {
@@ -670,8 +674,16 @@ struct MultiBlendDetailView: View {
                             .tint(.red)
                         }
                     }
-                    // Sola kaydır → Besin Değerleri Düzenle (her zaman) + Stokta Var (stokta yoksa)
+                    // Sola kaydır → Fiyat Geçmişi + Besin Değerleri + Stokta Var
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        if let lib = item.libEntry {
+                            Button {
+                                priceHistoryIngredient = lib
+                            } label: {
+                                Label("Fiyat Geçmişi", systemImage: "chart.line.uptrend.xyaxis")
+                            }
+                            .tint(.orange)
+                        }
                         if let lib = item.libEntry {
                             Button {
                                 editingIngredient = lib
@@ -1426,6 +1438,8 @@ private struct IngredientPriceField: View {
         guard let v = Double(clean), v > 0,
               let lib = item.libEntry else { load(); return }
         lib.priceTL = v
+        // Fiyat geçmişine otomatik kaydet
+        context.insert(PriceHistoryEntry(ingredientName: lib.name, priceTL: v))
         Task {
             try? await Task.sleep(for: .milliseconds(200))
             try? context.save()
