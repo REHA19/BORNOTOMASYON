@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import Charts
 
 // MARK: - List screen
 
@@ -88,6 +89,7 @@ struct MultiBlendDetailView: View {
     @Query(sort: \MultiBlendGroup.orderIndex) private var allGroups:   [MultiBlendGroup]
     @Query                                   private var allFormulas:  [BlendFormula]
     @Query                                   private var library:      [FeedIngredient]
+    @Query                                   private var costEntries:  [FormulaCostEntry]
 
     @StateObject private var productionVM = ProductionViewModel()
 
@@ -105,6 +107,8 @@ struct MultiBlendDetailView: View {
     @State private var showProductionConfirm  = false
     @State private var formulaSort:           FormulaSort = .tonDesc
     @State private var pickedProductionMonth: Date?                 = nil
+    @State private var costHistoryFormula:    BlendFormula?         = nil
+    @State private var nutrientCompFormula:   BlendFormula?         = nil
 
     enum FormulaSort: String, CaseIterable {
         case tonDesc  = "Tonaj ↓"
@@ -366,6 +370,16 @@ struct MultiBlendDetailView: View {
         .sheet(item: $editingIngredient) { ing in
             EditIngredientView(ingredient: ing)
         }
+        .sheet(item: $costHistoryFormula) { formula in
+            CostHistorySheet(
+                formula:  formula,
+                entries:  costEntries.filter { $0.formulaCode == formula.code }
+                                     .sorted { $0.recordedAt < $1.recordedAt }
+            )
+        }
+        .sheet(item: $nutrientCompFormula) { formula in
+            NutrientComparisonSheet(formula: formula)
+        }
         .onChange(of: productionVM.isLoading) { _, isLoading in
             if !isLoading {
                 autoMatchProduction(from: productionVM.summary?.entries ?? [])
@@ -541,6 +555,25 @@ struct MultiBlendDetailView: View {
                     Text(formula.code).font(.caption).foregroundStyle(.secondary)
                     Text("\(formula.ingredients.count) hammadde · \(formula.constraints.count) kısıt")
                         .font(.caption2).foregroundStyle(.tertiary)
+                    // Aksiyon butonları — maliyet geçmişi + besin karşılaştırma
+                    HStack(spacing: 10) {
+                        Button {
+                            costHistoryFormula = formula
+                        } label: {
+                            Label("Geçmiş", systemImage: "chart.line.uptrend.xyaxis")
+                                .font(.caption2).foregroundStyle(.orange)
+                        }
+                        .buttonStyle(.plain)
+                        if let res = solveResults[formula.code], res.ok {
+                            Button {
+                                nutrientCompFormula = formula
+                            } label: {
+                                Label("Besinler", systemImage: "chart.bar.doc.horizontal")
+                                    .font(.caption2).foregroundStyle(.indigo)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 4) {
@@ -840,8 +873,20 @@ struct MultiBlendDetailView: View {
         var snapTons: [String: Double] = [:]
         for formula in groupFormulas {
             let cost = solveResults[formula.code]?.cost ?? formula.currentCostTL
+            let tons = group.productionTons[formula.code] ?? 0
             snap[formula.code]     = cost
-            snapTons[formula.code] = group.productionTons[formula.code] ?? 0
+            snapTons[formula.code] = tons
+            // Maliyet geçmişine kaydet (sadece gerçek maliyet varsa)
+            if cost > 0 {
+                let entry = FormulaCostEntry(
+                    formulaCode: formula.code,
+                    formulaName: formula.name,
+                    groupName:   group.name,
+                    costPerTon:  cost,
+                    tons:        tons
+                )
+                context.insert(entry)
+            }
         }
         group.productionSnapshot     = snap
         group.productionSnapshotTons = snapTons
@@ -1861,5 +1906,208 @@ private struct SolveProgressRing: View {
                 trimEnd = 0.75
             }
         }
+    }
+}
+
+// MARK: - Maliyet Geçmişi Sheet
+
+private struct CostHistorySheet: View {
+    let formula: BlendFormula
+    let entries: [FormulaCostEntry]
+
+    private var dateLabel: (Date) -> String {
+        { date in
+            let fmt = DateFormatter()
+            fmt.locale = Locale(identifier: "tr_TR")
+            fmt.dateFormat = "d MMM"
+            return fmt.string(from: date)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if entries.isEmpty {
+                    ContentUnavailableView(
+                        "Geçmiş Yok",
+                        systemImage: "chart.line.uptrend.xyaxis",
+                        description: Text("\"Üretime Kaydet\" her basışta maliyet geçmişe eklenir.")
+                    )
+                } else {
+                    ScrollView {
+                        VStack(spacing: 20) {
+                            // ── Grafik ────────────────────────────────────────
+                            Chart(entries) { entry in
+                                LineMark(
+                                    x: .value("Tarih", entry.recordedAt),
+                                    y: .value("₺/ton", entry.costPerTon)
+                                )
+                                .foregroundStyle(.orange)
+                                .interpolationMethod(.catmullRom)
+                                PointMark(
+                                    x: .value("Tarih", entry.recordedAt),
+                                    y: .value("₺/ton", entry.costPerTon)
+                                )
+                                .foregroundStyle(.orange)
+                                .symbolSize(40)
+                            }
+                            .chartXAxis {
+                                AxisMarks(values: .automatic) { val in
+                                    AxisValueLabel {
+                                        if let d = val.as(Date.self) {
+                                            Text(dateLabel(d)).font(.caption2)
+                                        }
+                                    }
+                                }
+                            }
+                            .chartYAxis {
+                                AxisMarks { val in
+                                    AxisGridLine()
+                                    AxisValueLabel {
+                                        if let v = val.as(Double.self) {
+                                            Text(String(format: "%.0f ₺", v)).font(.caption2)
+                                        }
+                                    }
+                                }
+                            }
+                            .frame(height: 220)
+                            .padding(.horizontal)
+
+                            // ── Kayıt Listesi ─────────────────────────────────
+                            VStack(spacing: 0) {
+                                ForEach(entries.reversed()) { entry in
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(entry.recordedAt, style: .date)
+                                                .font(.subheadline)
+                                            if entry.tons > 0 {
+                                                Text(String(format: "%.1f ton", entry.tons))
+                                                    .font(.caption2).foregroundStyle(.secondary)
+                                            }
+                                        }
+                                        Spacer()
+                                        Text(String(format: "%.0f ₺/ton", entry.costPerTon))
+                                            .font(.subheadline.bold().monospacedDigit())
+                                            .foregroundStyle(.orange)
+                                    }
+                                    .padding(.vertical, 8)
+                                    .padding(.horizontal, 16)
+                                    Divider().padding(.leading, 16)
+                                }
+                            }
+                            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+                            .padding(.horizontal)
+                        }
+                        .padding(.top)
+                    }
+                    .background(Color(.systemGroupedBackground))
+                }
+            }
+            .navigationTitle("\(formula.name) — Maliyet")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}
+
+// MARK: - Besin Karşılaştırma Sheet
+
+private struct NutrientComparisonSheet: View {
+    let formula: BlendFormula
+
+    private var activeConstraints: [BFConstraint] {
+        formula.constraints.filter { $0.isActive && ($0.currentValue != nil || $0.previousValue != nil) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if activeConstraints.isEmpty {
+                    ContentUnavailableView(
+                        "Veri Yok",
+                        systemImage: "chart.bar.doc.horizontal",
+                        description: Text("Aktif kısıt ve hesaplanmış değer bulunamadı.")
+                    )
+                } else {
+                    List(activeConstraints) { con in
+                        NutrientCompRow(constraint: con)
+                    }
+                    .listStyle(.insetGrouped)
+                }
+            }
+            .navigationTitle("Besin Karşılaştırma")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(formula.name).font(.caption.bold())
+                        Text(formula.code).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct NutrientCompRow: View {
+    let constraint: BFConstraint
+
+    private var current:  Double { constraint.currentValue  ?? 0 }
+    private var previous: Double { constraint.previousValue ?? 0 }
+    private var diff:     Double { current - previous }
+
+    private var status: (icon: String, color: Color) {
+        let cur = constraint.currentValue ?? 0
+        let mn  = constraint.minValue
+        let mx  = constraint.maxValue
+        let ok  = (mn == nil || cur >= mn! - 0.001) && (mx == nil || cur <= mx! + 0.001)
+        if ok       { return ("checkmark.circle.fill", .green) }
+        if cur < (mn ?? 0) { return ("arrow.down.circle.fill", .red) }
+        return ("arrow.up.circle.fill", .red)
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: status.icon)
+                .foregroundStyle(status.color)
+                .font(.title3)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(constraint.resolvedDisplayName)
+                    .font(.subheadline.bold())
+                // Hedef sınırlar
+                HStack(spacing: 6) {
+                    if let mn = constraint.minValue {
+                        Text("Min: \(String(format: "%.2f", mn))")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    if let mx = constraint.maxValue {
+                        Text("Max: \(String(format: "%.2f", mx))")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 3) {
+                // Şimdiki değer
+                if let cur = constraint.currentValue {
+                    Text(String(format: "%.3f %@", cur, constraint.unit))
+                        .font(.subheadline.bold().monospacedDigit())
+                        .foregroundStyle(status.color)
+                }
+                // Önceki değer ve fark
+                if constraint.previousValue != nil && constraint.currentValue != nil && previous > 0 {
+                    HStack(spacing: 2) {
+                        Image(systemName: diff > 0.0001 ? "arrow.up" : diff < -0.0001 ? "arrow.down" : "minus")
+                            .font(.system(size: 8, weight: .bold))
+                        Text(String(format: "%+.3f", diff))
+                            .font(.caption2.monospacedDigit())
+                    }
+                    .foregroundStyle(abs(diff) < 0.0001 ? Color.secondary : diff > 0 ? Color.green : Color.red)
+                }
+            }
+        }
+        .padding(.vertical, 2)
     }
 }

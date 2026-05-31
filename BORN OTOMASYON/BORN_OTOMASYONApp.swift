@@ -46,7 +46,7 @@ struct BornOtomasyonApp: App {
         do {
             let c = try ModelContainer(
                 for: FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
-                    FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self,
+                    FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self, FormulaCostEntry.self,
                 configurations: ModelConfiguration(cloudKitDatabase: .automatic)
             )
             print("✅ BORN: CloudKit container aktif — sync çalışıyor")
@@ -59,7 +59,7 @@ struct BornOtomasyonApp: App {
         do {
             let c = try ModelContainer(
                 for: FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
-                    FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self,
+                    FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self, FormulaCostEntry.self,
                 configurations: ModelConfiguration(cloudKitDatabase: .none)
             )
             print("⚠️ BORN: Yerel store — sync YOK")
