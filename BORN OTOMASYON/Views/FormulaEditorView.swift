@@ -406,7 +406,9 @@ final class FormulaEditorVM {
             isFeasible:         result.isFeasible && !anyConstraintRelaxed,
             message:            finalMsg,
             reducedCosts:       result.reducedCosts,
-            costRangeIncreases: result.costRangeIncreases
+            costRangeIncreases: result.costRangeIncreases,
+            shadowPricesMin:    result.shadowPricesMin,
+            shadowPricesMax:    result.shadowPricesMax
         )
         solveMessage = finalMsg
         isSolving    = false

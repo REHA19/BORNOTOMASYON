@@ -55,10 +55,18 @@ final class BlendFormula {
 
     private func decode<T: Decodable>(_ type: T.Type, from json: String) -> T? {
         guard let data = json.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(type, from: data)
+        let dec = JSONDecoder()
+        dec.nonConformingFloatDecodingStrategy = .convertFromString(
+            positiveInfinity: "∞", negativeInfinity: "-∞", nan: "NaN"
+        )
+        return try? dec.decode(type, from: data)
     }
     private func encode<T: Encodable>(_ value: T) -> String {
-        (try? String(data: JSONEncoder().encode(value), encoding: .utf8)) ?? "[]"
+        let enc = JSONEncoder()
+        enc.nonConformingFloatEncodingStrategy = .convertToString(
+            positiveInfinity: "∞", negativeInfinity: "-∞", nan: "NaN"
+        )
+        return (try? String(data: enc.encode(value), encoding: .utf8)) ?? "[]"
     }
 }
 
@@ -116,4 +124,7 @@ struct BFSolveResult: Codable {
     // Sensitivity — gölge fiyat analizi
     var reducedCosts:       [String: Double] = [:]   // rasyona girmeyen: gerekli fiyat düşüşü ₺/ton
     var costRangeIncreases: [String: Double] = [:]   // rasyondaki: maks fiyat artışı ₺/ton
+    // Kısıt dual değişkenleri — ₺/ton per 1 orijinal birim gevşeme
+    var shadowPricesMin:    [String: Double] = [:]   // ≥ kısıtlar (besin min)
+    var shadowPricesMax:    [String: Double] = [:]   // ≤ kısıtlar (besin max)
 }

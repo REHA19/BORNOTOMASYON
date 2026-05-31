@@ -47,7 +47,7 @@ struct LPAnalysisMenuView: View {
     }
 }
 
-// MARK: - Formüle Özgü Analiz (3 Sekme)
+// MARK: - Formüle Özgü Analiz (4 Sekme)
 
 struct LPAnalysisView: View {
     let formula: BlendFormula
@@ -57,9 +57,10 @@ struct LPAnalysisView: View {
     var body: some View {
         VStack(spacing: 0) {
             Picker("Analiz", selection: $selectedTab) {
-                Text("🔍 Gölge Fiyat").tag(0)
-                Text("📊 Hassasiyet").tag(1)
-                Text("📋 Karşılaştırma").tag(2)
+                Text("📉 İnd. Maliyet").tag(0)
+                Text("🔍 Gölge Fiyat").tag(1)
+                Text("📊 Hassasiyet").tag(2)
+                Text("📋 Karşılaştırma").tag(3)
             }
             .pickerStyle(.segmented)
             .padding(.horizontal).padding(.top, 8)
@@ -67,8 +68,9 @@ struct LPAnalysisView: View {
             Divider().padding(.top, 8)
 
             switch selectedTab {
-            case 0: ShadowPriceTab(formula: formula)
-            case 1: SensitivityTab(formula: formula)
+            case 0: ReducedCostTab(formula: formula)
+            case 1: ConstraintShadowPriceTab(formula: formula)
+            case 2: SensitivityTab(formula: formula)
             default: ComparisonTab(formula: formula)
             }
         }
@@ -77,13 +79,13 @@ struct LPAnalysisView: View {
     }
 }
 
-// MARK: - Sekme 1: Gölge Fiyat (Rasyona girmeyen hammaddeler)
+// MARK: - Sekme 0: İndirilmiş Maliyet (Rasyona girmeyen hammaddeler — reduced cost)
 
-private struct ShadowPriceTab: View {
+private struct ReducedCostTab: View {
     let formula: BlendFormula
     @Query private var library: [FeedIngredient]
 
-    private struct ShadowRow: Identifiable {
+    struct ShadowRow: Identifiable {
         let id = UUID()
         let name:         String
         let code:         String
@@ -97,14 +99,14 @@ private struct ShadowPriceTab: View {
         guard let solve = formula.lastSolve else { return [] }
         return solve.reducedCosts
             .compactMap { code, drop -> ShadowRow? in
-                guard drop > 0.5 else { return nil }  // 0.5 ₺/ton altı gösterme
+                guard drop > 0.5 else { return nil }
                 let name = formula.ingredients.first { $0.code == code }?.name
                          ?? library.first { $0.code == code }?.name
                          ?? code
                 let price = library.first { $0.code == code }?.priceTL ?? 0
                 return ShadowRow(name: name, code: code, currentPrice: price, requiredDrop: drop)
             }
-            .sorted { $0.requiredDrop < $1.requiredDrop }  // en az düşüş gereken önce
+            .sorted { $0.requiredDrop < $1.requiredDrop }
     }
 
     var body: some View {
@@ -120,14 +122,14 @@ private struct ShadowPriceTab: View {
                 }
             } else {
                 Section {
-                    Text("Aşağıdaki hammaddeler şu an rasyona **girmiyor**. Fiyatı belirtilen miktarda düşerse rasyona girebilir.")
+                    Text("Aşağıdaki hammaddeler şu an rasyona **girmiyor**. Fiyatı belirtilen miktarda düşerse rasyona girebilir. Bu değerler **indirilmiş maliyet** (reduced cost) olarak adlandırılır.")
                         .font(.caption).foregroundStyle(.secondary)
                         .listRowBackground(Color.clear)
                 }
 
-                Section("Fiyat Düşüşü Gereken Hammaddeler (\(rows.count))") {
+                Section("İndirilmiş Maliyet — Gereken Fiyat Düşüşü (\(rows.count))") {
                     ForEach(rows) { row in
-                        ShadowPriceRow(row: row)
+                        ReducedCostRow(row: row)
                     }
                 }
             }
@@ -136,14 +138,14 @@ private struct ShadowPriceTab: View {
     }
 }
 
-private struct ShadowPriceRow: View {
-    let row: ShadowPriceTab.ShadowRow
+private struct ReducedCostRow: View {
+    let row: ReducedCostTab.ShadowRow
 
     private var urgencyColor: Color {
         let pct = row.requiredDrop / max(row.currentPrice, 1)
-        if pct < 0.05  { return .green }   // %5'ten az düşüş = yakın
-        if pct < 0.15  { return .orange }  // %5-15 = orta
-        return .red                        // %15+ = uzak
+        if pct < 0.05  { return .green }
+        if pct < 0.15  { return .orange }
+        return .red
     }
 
     var body: some View {
@@ -167,7 +169,6 @@ private struct ShadowPriceRow: View {
                 }
             }
 
-            // Fiyat barı
             if row.currentPrice > 0 {
                 HStack(spacing: 6) {
                     Text(String(format: "%.0f ₺", row.targetPrice))
@@ -190,19 +191,163 @@ private struct ShadowPriceRow: View {
     }
 }
 
+// MARK: - Sekme 1: Gerçek Gölge Fiyat (Besin kısıtlarının dual değişkenleri)
+
+private struct ConstraintShadowPriceTab: View {
+    let formula: BlendFormula
+
+    struct ShadowEntry: Identifiable {
+        let id = UUID()
+        let nutrientKey:  String
+        let displayName:  String
+        let unit:         String
+        let isMinBound:   Bool
+        let shadowPrice:  Double
+        let currentValue: Double?
+        let boundValue:   Double
+    }
+
+    private var entries: [ShadowEntry] {
+        guard let solve = formula.lastSolve else { return [] }
+        var result: [ShadowEntry] = []
+
+        for (key, sp) in solve.shadowPricesMin {
+            guard sp > 0.01 else { continue }
+            let con = formula.constraints.first { $0.nutrientKey == key }
+            let def = allNutrientDefs.first { $0.key == key }
+            result.append(ShadowEntry(
+                nutrientKey:  key,
+                displayName:  con?.resolvedDisplayName ?? def?.displayName ?? key,
+                unit:         con?.unit ?? def?.unit ?? "",
+                isMinBound:   true,
+                shadowPrice:  sp,
+                currentValue: con?.currentValue,
+                boundValue:   con?.minValue ?? 0
+            ))
+        }
+        for (key, sp) in solve.shadowPricesMax {
+            guard sp > 0.01 else { continue }
+            let con = formula.constraints.first { $0.nutrientKey == key }
+            let def = allNutrientDefs.first { $0.key == key }
+            result.append(ShadowEntry(
+                nutrientKey:  key,
+                displayName:  con?.resolvedDisplayName ?? def?.displayName ?? key,
+                unit:         con?.unit ?? def?.unit ?? "",
+                isMinBound:   false,
+                shadowPrice:  sp,
+                currentValue: con?.currentValue,
+                boundValue:   con?.maxValue ?? 0
+            ))
+        }
+        return result.sorted { $0.shadowPrice > $1.shadowPrice }
+    }
+
+    var body: some View {
+        List {
+            if entries.isEmpty {
+                Section {
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                        Text("Hiçbir besin kısıtı bağlayıcı değil veya gölge fiyat verisi yok. Önce çözüm çalıştırın.")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+            } else {
+                Section {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Kısıt Gölge Fiyatı (Dual Değişken)")
+                            .font(.caption.bold())
+                        Text("Bağlayıcı besin kısıtları. Sınırı 1 birim gevşetmek formül maliyetini gösterilen miktarda düşürür.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .listRowBackground(Color.clear)
+                }
+                Section("Bağlayıcı Kısıtlar (\(entries.count))") {
+                    ForEach(entries) { entry in
+                        ConstraintShadowRow(entry: entry)
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+    }
+}
+
+private struct ConstraintShadowRow: View {
+    let entry: ConstraintShadowPriceTab.ShadowEntry
+
+    private var impactColor: Color {
+        if entry.shadowPrice > 200 { return .red }
+        if entry.shadowPrice > 50  { return .orange }
+        return .yellow
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(entry.displayName).font(.subheadline.bold())
+                        Text(entry.isMinBound ? "Min" : "Max")
+                            .font(.caption2.bold())
+                            .padding(.horizontal, 5).padding(.vertical, 2)
+                            .background(entry.isMinBound
+                                ? Color.blue.opacity(0.15) : Color.purple.opacity(0.15))
+                            .foregroundStyle(entry.isMinBound ? .blue : .purple)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                    if let cur = entry.currentValue {
+                        Text(String(format: "Mevcut: %.3f %@ | Sınır: %.3f %@",
+                                    cur, entry.unit, entry.boundValue, entry.unit))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(String(format: "%.1f ₺/ton", entry.shadowPrice))
+                        .font(.subheadline.bold().monospacedDigit())
+                        .foregroundStyle(impactColor)
+                    Text("gölge fiyat")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+
+            GeometryReader { geo in
+                let frac = min(entry.shadowPrice / 500.0, 1.0)
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(Color.secondary.opacity(0.12)).frame(height: 5)
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(impactColor.opacity(0.75))
+                        .frame(width: geo.size.width * CGFloat(frac), height: 5)
+                }
+            }
+            .frame(height: 5)
+
+            let direction = entry.isMinBound ? "azaltılırsa" : "artırılırsa"
+            Text(String(format: "1%@ birim %@ → %.1f ₺/ton tasarruf",
+                        entry.unit.isEmpty ? "" : " \(entry.unit)",
+                        direction, entry.shadowPrice))
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 5)
+    }
+}
+
 // MARK: - Sekme 2: Hassasiyet (Rasyondaki hammaddelerin fiyat aralığı)
 
 private struct SensitivityTab: View {
     let formula: BlendFormula
     @Query private var library: [FeedIngredient]
 
-    private struct SensRow: Identifiable {
+    struct SensRow: Identifiable {
         let id = UUID()
         let name:         String
         let code:         String
         let currentPrice: Double
         let mixPct:       Double
-        let maxIncrease:  Double   // .infinity = sınırsız
+        let maxIncrease:  Double
         var isStable: Bool { maxIncrease == .infinity || maxIncrease > currentPrice * 0.5 }
     }
 
@@ -219,7 +364,7 @@ private struct SensitivityTab: View {
                 return SensRow(name: name, code: code, currentPrice: price,
                                mixPct: mixPct, maxIncrease: maxInc)
             }
-            .sorted { $0.maxIncrease < $1.maxIncrease }  // en kırılgan önce
+            .sorted { $0.maxIncrease < $1.maxIncrease }
     }
 
     var body: some View {
@@ -312,14 +457,12 @@ private struct ComparisonTab: View {
 
     var body: some View {
         List {
-            // ── Hammadde Değişimleri ──────────────────────────────────────────
             Section("Hammadde Oranları — Önceki vs Şimdiki") {
                 ForEach(changedIngredients) { ing in
                     let diff = ing.mixPct - ing.previousMixPct
                     let isNew   = ing.previousMixPct < 0.01 && ing.mixPct > 0.01
                     let isGone  = ing.mixPct < 0.01 && ing.previousMixPct > 0.01
                     HStack(spacing: 10) {
-                        // Durum ikonu
                         if isNew {
                             Image(systemName: "plus.circle.fill").foregroundStyle(.green)
                         } else if isGone {
@@ -357,51 +500,57 @@ private struct ComparisonTab: View {
                 }
             }
 
-            // ── Besin Değerleri ───────────────────────────────────────────────
             if !changedConstraints.isEmpty {
                 Section("Besin Değerleri — Önceki vs Şimdiki") {
-                    ForEach(changedConstraints) { con in
-                        let cur  = con.currentValue ?? 0
-                        let prev = con.previousValue
-                        HStack(spacing: 10) {
-                            // Hedef durumu
-                            let inRange = (con.minValue.map { cur >= $0 - 0.001 } ?? true)
-                                       && (con.maxValue.map { cur <= $0 + 0.001 } ?? true)
-                            Image(systemName: inRange ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                                .foregroundStyle(inRange ? .green : .orange)
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(con.resolvedDisplayName).font(.subheadline)
-                                HStack(spacing: 4) {
-                                    if let mn = con.minValue {
-                                        Text(String(format: "Min: %.2f", mn))
-                                            .font(.caption2).foregroundStyle(.secondary)
-                                    }
-                                    if let mx = con.maxValue {
-                                        Text(String(format: "Max: %.2f", mx))
-                                            .font(.caption2).foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-
-                            Spacer()
-
-                            HStack(spacing: 6) {
-                                if let p = prev {
-                                    Text(String(format: "%.3f", p))
-                                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                                    Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
-                                }
-                                Text(String(format: "%.3f %@", cur, con.unit))
-                                    .font(.subheadline.bold().monospacedDigit())
-                                    .foregroundStyle(inRange ? .primary : .orange)
-                            }
-                        }
-                        .padding(.vertical, 2)
+                    ForEach(changedConstraints, id: \.id) { con in
+                        ComparisonConstraintRow(con: con)
                     }
                 }
             }
         }
         .listStyle(.insetGrouped)
+    }
+}
+
+private struct ComparisonConstraintRow: View {
+    let con: BFConstraint
+
+    var body: some View {
+        let cur = con.currentValue ?? 0
+        let prev = con.previousValue
+        let inRange = (con.minValue.map { cur >= $0 - 0.001 } ?? true)
+                   && (con.maxValue.map { cur <= $0 + 0.001 } ?? true)
+        HStack(spacing: 10) {
+            Image(systemName: inRange ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .foregroundStyle(inRange ? .green : .orange)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(con.resolvedDisplayName).font(.subheadline)
+                HStack(spacing: 4) {
+                    if let mn = con.minValue {
+                        Text(String(format: "Min: %.2f", mn))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    if let mx = con.maxValue {
+                        Text(String(format: "Max: %.2f", mx))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Spacer()
+
+            HStack(spacing: 6) {
+                if let p = prev {
+                    Text(String(format: "%.3f", p))
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
+                }
+                Text(String(format: "%.3f %@", cur, con.unit))
+                    .font(.subheadline.bold().monospacedDigit())
+                    .foregroundStyle(inRange ? Color.primary : Color.orange)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }

@@ -33,6 +33,9 @@ struct SolverResult {
     var reducedCosts:      [String: Double] = [:]
     // Sensitivity — rasyondaki hammadde için maksimum fiyat artışı (₺/ton, ∞ = sınırsız)
     var costRangeIncreases: [String: Double] = [:]
+    // Shadow price — besin kısıtlarının dual değişkenleri (₺/ton per 1 orijinal birim)
+    var shadowPricesMin:   [String: Double] = [:]   // ≥ kısıtlar
+    var shadowPricesMax:   [String: Double] = [:]   // ≤ kısıtlar
 }
 
 // MARK: - Revised Simplex (minimisation, equality form via Big-M)
@@ -121,12 +124,16 @@ enum RationSolver {
         // in their original units (% for protein/fat/fiber, KCal/kg for energy, etc.).
         // So Σ(nutrient[i] * x[i]) = actual_mixture_value * 100.
         // To enforce actual_mixture_value ≥ minV, the LP RHS must be minV * 100.
+        var nutMinRowIndex: [String: Int] = [:]  // shadow price için satır indeksi kaydı
+        var nutMaxRowIndex: [String: Int] = [:]
         for con in nutKeys {
             let coeffs: [Double] = active.map { ing in ing.nutrients[con.key] ?? 0 }
             if let minV = con.minValue {
+                nutMinRowIndex[con.key] = rows.count
                 rows.append(Row(coeffs: coeffs, rhs: minV * 100, needsArtificial: true))
             }
             if let maxV = con.maxValue {
+                nutMaxRowIndex[con.key] = rows.count
                 rows.append(Row(coeffs: coeffs, rhs: maxV * 100, needsArtificial: false))
             }
         }
@@ -275,6 +282,22 @@ enum RationSolver {
             }
         }
 
+        // ── Shadow prices (dual variables) for nutritional constraints ──────────
+        // Column n+r holds the slack (≤) or surplus (≥) for row r.
+        // For ≥ constraint: T[objBase + n+r] = dual y_r (positive when binding)
+        // For ≤ constraint: T[objBase + n+r] = -y_r, so savings = T * 100 (positive when binding)
+        // Multiply by 100 to convert from LP-RHS units (minV*100) back to original units.
+        var shadowPricesMin: [String: Double] = [:]
+        var shadowPricesMax: [String: Double] = [:]
+        for (key, r) in nutMinRowIndex {
+            let sp = T[objBase + n + r] * 100.0
+            if sp > 1e-6 { shadowPricesMin[key] = sp }
+        }
+        for (key, r) in nutMaxRowIndex {
+            let sp = T[objBase + n + r] * 100.0
+            if sp > 1e-6 { shadowPricesMax[key] = sp }
+        }
+
         return SolverResult(
             isFeasible:         true,
             percentagesByCode:  pctByCode,
@@ -282,7 +305,9 @@ enum RationSolver {
             nutrientValues:     nutValues,
             message:            "Çözüm başarılı. Toplam: \(String(format:"%.2f",sumX))%",
             reducedCosts:       reducedCosts,
-            costRangeIncreases: costRangeIncreases
+            costRangeIncreases: costRangeIncreases,
+            shadowPricesMin:    shadowPricesMin,
+            shadowPricesMax:    shadowPricesMax
         )
     }
 
