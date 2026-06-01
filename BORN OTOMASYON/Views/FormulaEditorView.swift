@@ -632,7 +632,38 @@ struct FormulaEditorView: View {
     private var ingredientsTab: some View {
         List {
             // Solve result summary strip
-            if let s = vm.lastSolve {
+            if let s = vm.lastSolve, let formula = formula {
+                Section {
+                    HStack(spacing: 10) {
+                        Image(systemName: s.isFeasible ? "checkmark.seal.fill" : "xmark.seal.fill")
+                            .foregroundStyle(s.isFeasible ? .green : .red)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(s.isFeasible
+                                 ? String(format: "%.0f ₺/ton · %@ çözüldü", s.costPerTon, s.solvedAt.trClock)
+                                 : s.message)
+                                .font(.subheadline)
+                                .foregroundColor(s.isFeasible ? .primary : .red)
+                            if let prev = vm.previousCostPerTon, s.isFeasible {
+                                let diff = s.costPerTon - prev
+                                let sign = diff >= 0 ? "+" : ""
+                                Text(String(format: "Önceki: %.0f ₺/ton  (%@%.0f ₺)", prev, sign, diff))
+                                    .font(.caption)
+                                    .foregroundStyle(diff > 0 ? .red : diff < 0 ? .green : .secondary)
+                            }
+                        }
+                        Spacer()
+                        NavigationLink(destination: LPAnalysisView(formula: formula)) {
+                            Label("LP", systemImage: "waveform.path.ecg.rectangle.fill")
+                                .font(.caption.bold())
+                                .foregroundStyle(.purple)
+                                .padding(.horizontal, 8).padding(.vertical, 4)
+                                .background(Color.purple.opacity(0.12),
+                                            in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            } else if let s = vm.lastSolve {
                 Section {
                     HStack(spacing: 10) {
                         Image(systemName: s.isFeasible ? "checkmark.seal.fill" : "xmark.seal.fill")

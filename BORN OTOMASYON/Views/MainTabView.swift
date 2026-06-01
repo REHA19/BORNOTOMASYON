@@ -27,6 +27,7 @@ private let allMenuItems: [MenuItem] = [
     MenuItem(tag: 13, title: "MultiBlend",   icon: "rectangle.3.group.fill",          color: .indigo),
     MenuItem(tag: 14, title: "Gönderilen",   icon: "paperplane.fill",                 color: .orange),
     MenuItem(tag: 15, title: "Yem Rapor",    icon: "doc.text.fill",                   color: .green),
+    MenuItem(tag: 16, title: "LP Analizi",   icon: "waveform.path.ecg.rectangle.fill", color: .purple),
 ]
 
 @ViewBuilder
@@ -46,6 +47,7 @@ private func destinationView(for tag: Int) -> some View {
     case 13: MultiBlendListView()
     case 14: SentFormulasView()
     case 15: FeedReportView()
+    case 16: LPAnalysisMenuView()
     default: MaterialListView()
     }
 }

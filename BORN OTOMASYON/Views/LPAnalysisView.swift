@@ -79,7 +79,7 @@ struct LPAnalysisView: View {
     }
 }
 
-// MARK: - Sekme 0: İndirilmiş Maliyet (Rasyona girmeyen hammaddeler — reduced cost)
+// MARK: - Sekme 0: Maliyet Sınırı Analizi (Rasyona girmeyen hammaddeler — reduced cost)
 
 private struct ReducedCostTab: View {
     let formula: BlendFormula
@@ -92,7 +92,20 @@ private struct ReducedCostTab: View {
         let currentPrice: Double
         let requiredDrop: Double
         var targetPrice:  Double { max(0, currentPrice - requiredDrop) }
-        var urgency: Double { requiredDrop > 0 ? requiredDrop / max(currentPrice, 1) : 1 }
+        var urgencyPct:   Double { requiredDrop / max(currentPrice, 1) }
+        var urgencyColor: Color {
+            if urgencyPct < 0.05  { return .green }
+            if urgencyPct < 0.15  { return .orange }
+            return .red
+        }
+    }
+
+    // Chart'ta kullanılan veri segmenti
+    private struct ChartSegment: Identifiable {
+        let id      = UUID()
+        let ingName: String   // kısaltılmış isim
+        let segment: String   // "Eşik Fiyat" | "Gereken Düşüş"
+        let value:   Double
     }
 
     private var rows: [ShadowRow] {
@@ -100,13 +113,36 @@ private struct ReducedCostTab: View {
         return solve.reducedCosts
             .compactMap { code, drop -> ShadowRow? in
                 guard drop > 0.5 else { return nil }
-                let name = formula.ingredients.first { $0.code == code }?.name
-                         ?? library.first { $0.code == code }?.name
-                         ?? code
+                let name  = formula.ingredients.first { $0.code == code }?.name
+                          ?? library.first { $0.code == code }?.name
+                          ?? code
                 let price = library.first { $0.code == code }?.priceTL ?? 0
-                return ShadowRow(name: name, code: code, currentPrice: price, requiredDrop: drop)
+                return ShadowRow(name: name, code: code,
+                                 currentPrice: price, requiredDrop: drop)
             }
             .sorted { $0.requiredDrop < $1.requiredDrop }
+    }
+
+    // Yalnızca ilk 10 satırı chart'a al (okunabilirlik)
+    private var chartData: [ChartSegment] {
+        rows.prefix(10).flatMap { row -> [ChartSegment] in
+            let short = row.name.count > 15
+                ? String(row.name.prefix(14)) + "…"
+                : row.name
+            return [
+                ChartSegment(ingName: short, segment: "Eşik Fiyat",
+                             value: max(0, row.targetPrice)),
+                ChartSegment(ingName: short, segment: "Gereken Düşüş",
+                             value: row.requiredDrop)
+            ]
+        }
+    }
+
+    // Özet metrikleri
+    private var closestRow: ShadowRow? { rows.first }
+    private var avgDropPct: Double {
+        guard !rows.isEmpty else { return 0 }
+        return rows.map(\.urgencyPct).reduce(0, +) / Double(rows.count) * 100
     }
 
     var body: some View {
@@ -121,13 +157,106 @@ private struct ReducedCostTab: View {
                     .padding(.vertical, 4)
                 }
             } else {
+                // ── Özet Kart ────────────────────────────────────────────────
                 Section {
-                    Text("Aşağıdaki hammaddeler şu an rasyona **girmiyor**. Fiyatı belirtilen miktarda düşerse rasyona girebilir. Bu değerler **indirilmiş maliyet** (reduced cost) olarak adlandırılır.")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .listRowBackground(Color.clear)
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Maliyet Sınırı Analizi")
+                                    .font(.headline)
+                                Text("Rasyona girmeyen \(rows.count) hammadde için eşik fiyat hesabı")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chart.bar.xaxis.ascending")
+                                .font(.title2).foregroundStyle(.blue)
+                        }
+
+                        Divider()
+
+                        HStack(spacing: 0) {
+                            // En yakın hammadde
+                            if let best = closestRow {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("En Yakın").font(.caption2).foregroundStyle(.secondary)
+                                    Text(best.name)
+                                        .font(.caption.bold())
+                                        .lineLimit(1)
+                                    HStack(spacing: 3) {
+                                        Image(systemName: "arrow.down.circle.fill")
+                                            .foregroundStyle(best.urgencyColor)
+                                            .font(.caption2)
+                                        Text(String(format: "−%.0f ₺/ton", best.requiredDrop))
+                                            .font(.caption.bold().monospacedDigit())
+                                            .foregroundStyle(best.urgencyColor)
+                                    }
+                                }
+                            }
+                            Spacer()
+                            Divider().frame(height: 36)
+                            Spacer()
+                            // Ortalama düşüş
+                            VStack(alignment: .center, spacing: 2) {
+                                Text("Ort. Düşüş").font(.caption2).foregroundStyle(.secondary)
+                                Text(String(format: "%%%.1f", avgDropPct))
+                                    .font(.title3.bold().monospacedDigit())
+                                    .foregroundStyle(avgDropPct < 5 ? .green : avgDropPct < 15 ? .orange : .red)
+                                Text("fiyat düşüşü").font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Divider().frame(height: 36)
+                            Spacer()
+                            // Toplam hammadde sayısı
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text("Aday").font(.caption2).foregroundStyle(.secondary)
+                                Text("\(rows.count)")
+                                    .font(.title3.bold())
+                                Text("hammadde").font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+                .listRowBackground(Color.blue.opacity(0.05))
+
+                // ── Swift Charts: Eşik Fiyat Grafiği ────────────────────────
+                Section("Eşik Fiyat Grafiği (İlk \(min(rows.count, 10)) Hammadde)") {
+                    Chart(chartData) { seg in
+                        BarMark(
+                            x: .value("₺/ton", seg.value),
+                            y: .value("Hammadde", seg.ingName)
+                        )
+                        .foregroundStyle(by: .value("Segment", seg.segment))
+                        .cornerRadius(3)
+                    }
+                    .chartForegroundStyleScale([
+                        "Eşik Fiyat":    Color.blue.opacity(0.65),
+                        "Gereken Düşüş": Color.red.opacity(0.30)
+                    ])
+                    .chartLegend(position: .bottom, alignment: .leading, spacing: 6)
+                    .chartXAxis {
+                        AxisMarks { val in
+                            AxisGridLine()
+                            AxisValueLabel {
+                                if let v = val.as(Double.self) {
+                                    Text(v >= 1000
+                                         ? String(format: "%.0fK", v / 1000)
+                                         : String(format: "%.0f", v))
+                                        .font(.system(size: 9))
+                                }
+                            }
+                        }
+                    }
+                    .frame(height: CGFloat(min(rows.count, 10)) * 34 + 48)
+                    .padding(.vertical, 4)
+
+                    // Grafik açıklaması
+                    Text("🔵 Eşik Fiyat: Bu fiyata düşerse rasyona girer   🔴 Gereken Düşüş: Toplam = Şu anki fiyat")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
 
-                Section("İndirilmiş Maliyet — Gereken Fiyat Düşüşü (\(rows.count))") {
+                // ── Detay Listesi ────────────────────────────────────────────
+                Section("Hammadde Detayları (\(rows.count))") {
                     ForEach(rows) { row in
                         ReducedCostRow(row: row)
                     }
@@ -141,16 +270,10 @@ private struct ReducedCostTab: View {
 private struct ReducedCostRow: View {
     let row: ReducedCostTab.ShadowRow
 
-    private var urgencyColor: Color {
-        let pct = row.requiredDrop / max(row.currentPrice, 1)
-        if pct < 0.05  { return .green }
-        if pct < 0.15  { return .orange }
-        return .red
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
+        VStack(alignment: .leading, spacing: 8) {
+            // Başlık satırı
+            HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(row.name).font(.subheadline.bold())
                     Text(row.code).font(.caption2).foregroundStyle(.secondary)
@@ -159,35 +282,61 @@ private struct ReducedCostRow: View {
                 VStack(alignment: .trailing, spacing: 2) {
                     HStack(spacing: 3) {
                         Image(systemName: "arrow.down.circle.fill")
-                            .foregroundStyle(urgencyColor)
-                        Text(String(format: "%.0f ₺/ton", row.requiredDrop))
-                            .font(.subheadline.bold())
-                            .foregroundStyle(urgencyColor)
+                            .foregroundStyle(row.urgencyColor)
+                        Text(String(format: "−%.0f ₺/ton", row.requiredDrop))
+                            .font(.subheadline.bold().monospacedDigit())
+                            .foregroundStyle(row.urgencyColor)
                     }
-                    Text("düşürülmeli")
-                        .font(.caption2).foregroundStyle(.secondary)
+                    Text(String(format: "%%%.1f düşüş", row.urgencyPct * 100))
+                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                 }
             }
 
+            // Eşik fiyat bilgisi
             if row.currentPrice > 0 {
-                HStack(spacing: 6) {
-                    Text(String(format: "%.0f ₺", row.targetPrice))
-                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            RoundedRectangle(cornerRadius: 3).fill(Color.secondary.opacity(0.15))
-                                .frame(height: 6)
-                            RoundedRectangle(cornerRadius: 3).fill(urgencyColor.opacity(0.7))
-                                .frame(width: geo.size.width * CGFloat(1 - min(row.requiredDrop / row.currentPrice, 1)), height: 6)
-                        }
+                HStack {
+                    Label(String(format: "Eşik: %.0f ₺/ton", row.targetPrice),
+                          systemImage: "target")
+                        .font(.caption.bold())
+                        .foregroundStyle(.blue)
+                    Spacer()
+                    Text(String(format: "Şu an: %.0f ₺/ton", row.currentPrice))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                // Görsel bar
+                GeometryReader { geo in
+                    let safeFrac = CGFloat(row.targetPrice / max(row.currentPrice, 1))
+                    ZStack(alignment: .leading) {
+                        // Tam bar (şu anki fiyat)
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.red.opacity(0.18))
+                            .frame(height: 8)
+                        // Güvenli kısım (eşik fiyat)
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.blue.opacity(0.55))
+                            .frame(width: geo.size.width * safeFrac, height: 8)
+                        // Eşik çizgisi
+                        Rectangle()
+                            .fill(Color.blue)
+                            .frame(width: 2, height: 14)
+                            .offset(x: geo.size.width * safeFrac - 1)
                     }
-                    .frame(height: 6)
+                }
+                .frame(height: 8)
+
+                HStack {
+                    Text("0 ₺").font(.system(size: 9)).foregroundStyle(.tertiary)
+                    Spacer()
+                    Text(String(format: "Eşik: %.0f ₺", row.targetPrice))
+                        .font(.system(size: 9)).foregroundStyle(.blue)
+                    Spacer()
                     Text(String(format: "%.0f ₺", row.currentPrice))
-                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        .font(.system(size: 9)).foregroundStyle(.tertiary)
                 }
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 5)
     }
 }
 
