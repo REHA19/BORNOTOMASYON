@@ -177,16 +177,22 @@ struct MultiBlendDetailView: View {
                                           formulaCount: 0, libEntry: lib))
             }
         }
-        // monthlyUsage'ı sort öncesi tek seferde hesapla → sort O(N log N) kalır
+        // monthlyTons'u tüm hammaddeler için bir kerede hesapla, struct'a göm
+        // → ingredientRow her satırda ayrı reduce yapmak zorunda kalmaz
         let tons = group.productionTons
-        var usageCache = [String: Double]()
-        for item in result {
-            usageCache[item.code] = groupFormulas.reduce(0.0) { sum, f in
-                let pct   = f.ingredients.first { $0.code == item.code }?.mixPct ?? 0
-                let fTons = tons[f.code] ?? 0
-                return sum + pct / 100.0 * fTons
-            }
+        // Önce formül başına ingredients dict'i kur (her formül için tek decode)
+        let ingsByFormula: [[String: Double]] = groupFormulas.map { f in
+            Dictionary(uniqueKeysWithValues: f.ingredients.map { ($0.code, $0.mixPct) })
         }
+        let formTons = groupFormulas.map { tons[$0.code] ?? 0.0 }
+        for i in result.indices {
+            var usage = 0.0
+            for fi in ingsByFormula.indices {
+                usage += (ingsByFormula[fi][result[i].code] ?? 0) / 100.0 * formTons[fi]
+            }
+            result[i].monthlyTons = usage
+        }
+        let usageCache = Dictionary(uniqueKeysWithValues: result.map { ($0.code, $0.monthlyTons) })
         return result.sorted {
             // Stokta olmayan hammaddeler her zaman listenin altında görünür
             let av0 = $0.libEntry?.isAvailable ?? true
@@ -651,12 +657,13 @@ struct MultiBlendDetailView: View {
     // MARK: - Ortak Hammaddeler section
 
     private var ingredientsSection: some View {
-        Section {
-            if combinedIngredients.isEmpty {
+        let items = combinedIngredients   // tek seferde hesapla
+        return Section {
+            if items.isEmpty {
                 Text("Formül eklendikçe hammaddeler burada listelenir.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                ForEach(combinedIngredients) { item in
+                ForEach(items) { item in
                     Button {
                         selectedIngUsage = item
                     } label: {
@@ -705,7 +712,7 @@ struct MultiBlendDetailView: View {
             }
         } header: {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Ortak Hammadde Listesi (\(combinedIngredients.count))")
+                Text("Ortak Hammadde Listesi (\(items.count))")
                 if totalProductionTons > 0 {
                     Text(String(format: "Toplam üretim: %.1f ton/ay", totalProductionTons))
                         .font(.caption2).foregroundStyle(.secondary)
@@ -716,7 +723,7 @@ struct MultiBlendDetailView: View {
 
     @ViewBuilder
     private func ingredientRow(_ item: CombinedIng) -> some View {
-        let usage        = monthlyUsage(ingCode: item.code)
+        let usage        = item.monthlyTons
         let limit        = group.monthlyIngLimits[item.code]
         let hasViolation = (limit?.maxTons).map { usage > 0 && usage > $0 } ?? false
         let isAvailable  = item.libEntry?.isAvailable ?? true
@@ -1456,6 +1463,7 @@ private struct CombinedIng: Identifiable {
     let name:        String
     let formulaCount: Int
     let libEntry:    FeedIngredient?
+    var monthlyTons: Double = 0   // önceden hesaplanmış kullanım — ingredientRow'da re-compute yok
 }
 
 // MARK: - Hammadde Formül Kullanım Detayı

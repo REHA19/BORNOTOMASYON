@@ -171,7 +171,9 @@ struct SendFormulaSheet: View {
             serverMessage:        message,
             ingredientCount:      activeIngredients.count,
             totalKg:              formula.totalKg,
-            ingredientsSnapshot:  snapJSON
+            ingredientsSnapshot:  snapJSON,
+            costPerTon:           formula.lastSolve?.costPerTon ?? formula.currentCostTL,
+            nutrientsSnapshot:    SendRecord.buildNutrientSnaps(from: formula)
         )
         modelContext.insert(record)
         try? modelContext.save()
@@ -494,7 +496,9 @@ struct MultiBlendSendSheet: View {
             serverMessage:        message,
             ingredientCount:      active.count,
             totalKg:              formula.totalKg,
-            ingredientsSnapshot:  snapJSON
+            ingredientsSnapshot:  snapJSON,
+            costPerTon:           formula.lastSolve?.costPerTon ?? formula.currentCostTL,
+            nutrientsSnapshot:    SendRecord.buildNutrientSnaps(from: formula)
         )
         modelContext.insert(record)
         try? modelContext.save()

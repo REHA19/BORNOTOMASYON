@@ -26,29 +26,77 @@ final class BlendFormula {
         self.constraintsJSON = "[]"
     }
 
+    // MARK: - Decode cache (@Transient = persisted değil, render döngüsünde tekrar decode önler)
+    @Transient private var _ingKey:   String = ""; @Transient private var _ingCache:   [BFIngredient]?  = nil
+    @Transient private var _conKey:   String = ""; @Transient private var _conCache:   [BFConstraint]?  = nil
+    @Transient private var _solKey:   String = ""; @Transient private var _solCache:   BFSolveResult??  = .some(nil)
+    @Transient private var _combKey:  String = ""; @Transient private var _combCache:  [BFCombination]? = nil
+
     var ingredients: [BFIngredient] {
-        get { decode([BFIngredient].self, from: ingredientsJSON) ?? [] }
-        set { ingredientsJSON = encode(newValue) }
+        get {
+            if _ingKey != ingredientsJSON || _ingCache == nil {
+                _ingCache = decode([BFIngredient].self, from: ingredientsJSON) ?? []
+                _ingKey   = ingredientsJSON
+            }
+            return _ingCache!
+        }
+        set {
+            let enc     = encode(newValue)
+            ingredientsJSON = enc
+            _ingCache   = newValue
+            _ingKey     = enc
+        }
     }
 
     var constraints: [BFConstraint] {
-        get { decode([BFConstraint].self, from: constraintsJSON) ?? [] }
-        set { constraintsJSON = encode(newValue) }
+        get {
+            if _conKey != constraintsJSON || _conCache == nil {
+                _conCache = decode([BFConstraint].self, from: constraintsJSON) ?? []
+                _conKey   = constraintsJSON
+            }
+            return _conCache!
+        }
+        set {
+            let enc     = encode(newValue)
+            constraintsJSON = enc
+            _conCache   = newValue
+            _conKey     = enc
+        }
     }
 
     var lastSolve: BFSolveResult? {
         get {
-            guard let j = lastSolveJSON else { return nil }
-            return decode(BFSolveResult.self, from: j)
+            let key = lastSolveJSON ?? ""
+            if _solKey != key {
+                _solCache = lastSolveJSON.flatMap { decode(BFSolveResult.self, from: $0) }
+                _solKey   = key
+            }
+            return _solCache ?? nil
         }
-        set { lastSolveJSON = newValue.map { encode($0) } }
+        set {
+            let enc     = newValue.map { encode($0) }
+            lastSolveJSON = enc
+            _solCache   = .some(newValue)
+            _solKey     = enc ?? ""
+        }
     }
 
     var combinationsJSON: String = "[]"
 
     var combinations: [BFCombination] {
-        get { decode([BFCombination].self, from: combinationsJSON) ?? [] }
-        set { combinationsJSON = encode(newValue) }
+        get {
+            if _combKey != combinationsJSON || _combCache == nil {
+                _combCache = decode([BFCombination].self, from: combinationsJSON) ?? []
+                _combKey   = combinationsJSON
+            }
+            return _combCache!
+        }
+        set {
+            let enc     = encode(newValue)
+            combinationsJSON = enc
+            _combCache  = newValue
+            _combKey    = enc
+        }
     }
 
     var currentCostTL: Double { lastSolve?.costPerTon ?? 0 }

@@ -262,6 +262,11 @@ private struct RecordRow: View {
                 Text(timeStr)
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
+                if record.costPerTon > 0 {
+                    Text(String(format: "%.0f ₺/ton", record.costPerTon))
+                        .font(.caption2.bold().monospacedDigit())
+                        .foregroundStyle(.orange)
+                }
                 Text("\(record.ingredientCount) hmd")
                     .font(.caption2).foregroundStyle(.tertiary)
                 if record.totalKg > 0 {
@@ -287,6 +292,47 @@ private struct RecordRow: View {
 
 struct SentRecordDetailView: View {
     let record: SendRecord
+
+    @Query(sort: \SendRecord.sentAt, order: .reverse) private var allRecords: [SendRecord]
+
+    // Aynı formülün bu gönderiyle hemen önceki gönderisi
+    private var previousRecord: SendRecord? {
+        allRecords.first { $0.formulaCode == record.formulaCode && $0.sentAt < record.sentAt }
+    }
+
+    struct IngChange: Identifiable {
+        let id   = UUID()
+        let code:        String
+        let name:        String
+        let currentPct:  Double
+        let previousPct: Double
+        var delta:  Double { currentPct - previousPct }
+        var isNew:  Bool   { previousPct < 0.01 && currentPct  > 0.01 }
+        var isGone: Bool   { currentPct  < 0.01 && previousPct > 0.01 }
+    }
+
+    private var ingredientChanges: [IngChange] {
+        guard let prev = previousRecord, !prev.snapshotIngredients.isEmpty else { return [] }
+        let prevMap = Dictionary(uniqueKeysWithValues:
+            prev.snapshotIngredients.map { ($0.code, $0.mixPct) })
+        let currMap = Dictionary(uniqueKeysWithValues:
+            record.snapshotIngredients.map { ($0.code, $0.mixPct) })
+
+        var changes: [IngChange] = []
+
+        for snap in record.snapshotIngredients {
+            let prevPct = prevMap[snap.code] ?? 0
+            if abs(snap.mixPct - prevPct) > 0.09 || (prevPct < 0.01 && snap.mixPct > 0.01) {
+                changes.append(IngChange(code: snap.code, name: snap.name,
+                                         currentPct: snap.mixPct, previousPct: prevPct))
+            }
+        }
+        for prevSnap in prev.snapshotIngredients where (currMap[prevSnap.code] ?? 0) < 0.01 && prevSnap.mixPct > 0.01 {
+            changes.append(IngChange(code: prevSnap.code, name: prevSnap.name,
+                                     currentPct: 0, previousPct: prevSnap.mixPct))
+        }
+        return changes.sorted { abs($0.delta) > abs($1.delta) }
+    }
 
     private var ingredients: [SentIngredientSnap] {
         record.snapshotIngredients.sorted { $0.amountKg > $1.amountKg }
@@ -327,6 +373,67 @@ struct SentRecordDetailView: View {
                 }
             }
 
+            // ── Maliyet ──────────────────────────────────────────────────────
+            if record.costPerTon > 0 {
+                Section("Maliyet") {
+                    HStack {
+                        Label("Ton Başı Maliyet", systemImage: "turkishlirasign.circle.fill")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(String(format: "%.2f ₺/ton", record.costPerTon))
+                            .font(.subheadline.bold()).foregroundStyle(.orange)
+                    }
+                    if record.totalKg > 0 {
+                        HStack {
+                            Text("Toplam Parti Maliyeti").foregroundStyle(.secondary)
+                            Spacer()
+                            Text(String(format: "%.0f ₺", record.costPerTon * record.totalKg / 1000))
+                                .font(.subheadline.bold()).foregroundStyle(.orange)
+                        }
+                    }
+                }
+            }
+
+            // ── Besin Değerleri ───────────────────────────────────────────────
+            let nutrients = record.snapshotNutrients
+            if !nutrients.isEmpty {
+                Section {
+                    ForEach(nutrients, id: \.id) { nut in
+                        SentNutrientRow(nut: nut)
+                    }
+                } header: {
+                    HStack {
+                        Text("Besin Değerleri (\(nutrients.count))")
+                        Spacer()
+                        Text("Min–Max aralığı dışındakiler turuncu")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            // ── Hammadde Değişimi (önceki gönderimle kıyaslama) ──────────────
+            let changes = ingredientChanges
+            if !changes.isEmpty {
+                Section {
+                    ForEach(changes, id: \.id) { ch in
+                        IngChangeRow(change: ch)
+                    }
+                } header: {
+                    HStack {
+                        Text("Değişim — Önceki Gönderime Göre")
+                        Spacer()
+                        Text(previousRecord.map {
+                            let fmt = DateFormatter()
+                            fmt.locale = Locale(identifier: "tr_TR")
+                            fmt.dateFormat = "d MMM HH:mm"
+                            return fmt.string(from: $0.sentAt)
+                        } ?? "")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            // ── Hammaddeler ───────────────────────────────────────────────────
             Section {
                 if ingredients.isEmpty {
                     Text("İçerik kaydedilmemiş (eski kayıt).")
@@ -374,5 +481,81 @@ struct SentRecordDetailView: View {
             Spacer()
             Text(value).fontWeight(.medium)
         }
+    }
+}
+
+private struct IngChangeRow: View {
+    let change: SentRecordDetailView.IngChange
+
+    var body: some View {
+        HStack(spacing: 10) {
+            // İkon
+            Group {
+                if change.isNew {
+                    Image(systemName: "plus.circle.fill").foregroundStyle(.green)
+                } else if change.isGone {
+                    Image(systemName: "minus.circle.fill").foregroundStyle(.red)
+                } else if change.delta > 0 {
+                    Image(systemName: "arrow.up.circle.fill").foregroundStyle(.green)
+                } else {
+                    Image(systemName: "arrow.down.circle.fill").foregroundStyle(.red)
+                }
+            }
+            .font(.title3)
+
+            // İsim + durum
+            VStack(alignment: .leading, spacing: 2) {
+                Text(change.name).font(.subheadline)
+                if change.isNew {
+                    Text("Yeni eklendi").font(.caption2).foregroundStyle(.green)
+                } else if change.isGone {
+                    Text("Rasyondan çıktı").font(.caption2).foregroundStyle(.red)
+                }
+            }
+
+            Spacer()
+
+            // Yüzde bilgisi
+            VStack(alignment: .trailing, spacing: 2) {
+                if change.isNew {
+                    Text(String(format: "%.2f%%", change.currentPct))
+                        .font(.subheadline.bold().monospacedDigit()).foregroundStyle(.green)
+                } else if change.isGone {
+                    Text(String(format: "%.2f%%", change.previousPct))
+                        .font(.subheadline.bold().monospacedDigit()).foregroundStyle(.red)
+                        .strikethrough()
+                } else {
+                    let color: Color = change.delta > 0 ? .green : .red
+                    Text(String(format: "%+.2f%%", change.delta))
+                        .font(.subheadline.bold().monospacedDigit()).foregroundStyle(color)
+                    HStack(spacing: 3) {
+                        Text(String(format: "%.2f", change.previousPct))
+                            .foregroundStyle(.secondary)
+                        Image(systemName: "arrow.right").font(.system(size: 8))
+                            .foregroundStyle(.tertiary)
+                        Text(String(format: "%.2f%%", change.currentPct))
+                            .foregroundStyle(color)
+                    }
+                    .font(.caption2.monospacedDigit())
+                }
+            }
+        }
+        .padding(.vertical, 3)
+    }
+}
+
+private struct SentNutrientRow: View {
+    let nut: SentNutrientSnap
+    var body: some View {
+        let inRange = (nut.minValue.map { nut.value >= $0 - 0.001 } ?? true)
+                   && (nut.maxValue.map { nut.value <= $0 + 0.001 } ?? true)
+        HStack(spacing: 8) {
+            Text(nut.displayName).font(.subheadline)
+            Spacer()
+            Text(String(format: "%.3f %@", nut.value, nut.unit))
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(inRange ? Color.primary : Color.orange)
+        }
+        .padding(.vertical, 1)
     }
 }
