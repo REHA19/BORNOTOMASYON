@@ -107,7 +107,8 @@ struct MenuGridView: View {
     @AppStorage("menuItemOrder")   private var savedOrder:     String = ""
     @AppStorage("textSizeStep")    private var textSizeStep:   Int    = 1
 
-    @Query private var library:     [FeedIngredient]
+    @Query(filter: #Predicate<FeedIngredient> { $0.isAvailable == false })
+    private var unavailableIngredients: [FeedIngredient]
     @Query private var allFormulas: [BlendFormula]
 
     @State private var orderedTags:  [Int]  = []
@@ -117,12 +118,12 @@ struct MenuGridView: View {
 
     // "Uyarılar" kartında gösterilecek rozet: formüllerde aktif ama stokta olmayan hammadde sayısı
     private var alertBadgeCount: Int {
-        library.filter { ing in
-            guard !ing.isAvailable else { return false }
-            return allFormulas.contains { formula in
-                formula.ingredients.contains { $0.code == ing.code && $0.isActive }
-            }
-        }.count
+        guard !unavailableIngredients.isEmpty else { return 0 }
+        let unavailCodes: Set<String> = Set(unavailableIngredients.map { $0.code })
+        let usedCodes: Set<String> = allFormulas.reduce(into: []) { result, formula in
+            formula.ingredients.forEach { if $0.isActive { result.insert($0.code) } }
+        }
+        return unavailCodes.intersection(usedCodes).count
     }
 
     // Büyük boyutlarda sütun sayısını azalt ki kartlar sıkışmasın

@@ -35,7 +35,7 @@ struct SplashView: View {
             logoOpacity = 1.0
         }
         // Belli süre bekle, sonra ana menüye geç
-        try? await Task.sleep(for: .milliseconds(2800))
+        try? await Task.sleep(for: .milliseconds(1200))
         withAnimation(.easeIn(duration: 0.4)) {
             splashComplete = true
         }

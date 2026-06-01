@@ -41,10 +41,14 @@ final class MultiBlendGroup {
             guard let data = formulaCodesJSON.data(using: .utf8),
                   let arr  = try? JSONDecoder().decode([String].self, from: data)
             else { return [] }
-            return arr
+            // Mükerrer kodları kaldır (CloudKit sync veya başka yollarla biriken tekrarlar)
+            var seen = Set<String>()
+            return arr.filter { seen.insert($0).inserted }
         }
         set {
-            formulaCodesJSON = (try? String(data: JSONEncoder().encode(newValue), encoding: .utf8)) ?? "[]"
+            var seen = Set<String>()
+            let unique = newValue.filter { seen.insert($0).inserted }
+            formulaCodesJSON = (try? String(data: JSONEncoder().encode(unique), encoding: .utf8)) ?? "[]"
         }
     }
 
