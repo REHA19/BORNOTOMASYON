@@ -59,7 +59,7 @@ final class BornPDFCanvas {
     let blue    = UIColor(red: 0.00, green: 0.20, blue: 0.50, alpha: 1)
     let blueHdr = UIColor(red: 0.83, green: 0.90, blue: 0.97, alpha: 1)
     let altRow  = UIColor(red: 0.95, green: 0.97, blue: 1.00, alpha: 1)
-    private(set) var y: CGFloat = 36
+    var y: CGFloat = 36
     private weak var ctx: UIGraphicsPDFRendererContext?
 
     init(landscape: Bool = false) { W = landscape ? 841.8 : 595.2; H = landscape ? 595.2 : 841.8 }

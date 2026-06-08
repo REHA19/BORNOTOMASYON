@@ -60,11 +60,11 @@ final class FormulaEditorVM {
     // Pull current library prices into every ingredient's overridePriceTLPerTon so the
     // displayed price is always up-to-date regardless of when the formula was last saved.
     func loadPricesFromLibrary<T: LibEntry>(_ library: [T]) {
+        // O(1) dict lookup yerine O(N×M) IngredientMatcher.find() döngüsü kullanmıyoruz
+        let libByCode: [String: T] = Dictionary(library.map { ($0.code, $0) }, uniquingKeysWith: { first, _ in first })
         for i in 0..<ingredients.count {
-            guard let lib = IngredientMatcher.find(
-                    code: ingredients[i].code,
-                    name: ingredients[i].name,
-                    in:   library),
+            let code = ingredients[i].code
+            guard let lib = libByCode[code] ?? library.first(where: { $0.name == ingredients[i].name }),
                   let price = lib.priceTL, price > 0
             else { continue }
             ingredients[i].overridePriceTLPerTon = price
@@ -74,14 +74,18 @@ final class FormulaEditorVM {
     // Compute currentValue for every constraint from the existing ingredient mixPct + library,
     // without running the LP. Called on load and whenever constraints are added.
     func computeNutrients(library: [FeedIngredient]) {
+        // O(1) dict lookup — her kısıt için tüm kütüphane taranmıyor
+        let libByCode: [String: FeedIngredient] = Dictionary(
+            library.map { ($0.code, $0) }, uniquingKeysWith: { first, _ in first }
+        )
+        let activeIngs = ingredients.filter { $0.isActive && $0.mixPct > 0 }
         for i in 0..<constraints.count {
             let key = constraints[i].nutrientKey
             var total   = 0.0
             var hasData = false
-            for ing in ingredients {
-                guard ing.isActive, ing.mixPct > 0 else { continue }
-                if let lib = IngredientMatcher.find(code: ing.code, name: ing.name, in: library),
-                   let v   = lib.nutrientValue(forKey: key) {
+            for ing in activeIngs {
+                let lib = libByCode[ing.code]
+                if let v = lib?.nutrientValue(forKey: key) {
                     total   += ing.mixPct / 100.0 * v
                     hasData  = true
                 }
@@ -148,7 +152,8 @@ final class FormulaEditorVM {
     }
 
     // Solve LP — works with any LibEntry (FeedIngredient on main, IngSnap on background)
-    func solve<T: LibEntry>(library: [T]) {
+    // hardMaxByCode: aylık limit nedeniyle uygulanan maxPct kapları — autoRelaxed bunları aşamaz
+    func solve<T: LibEntry>(library: [T], hardMaxByCode: [String: Double] = [:]) {
         isSolving    = true
         solveMessage = nil
 
@@ -200,9 +205,10 @@ final class FormulaEditorVM {
 
         // ── Step 2: auto-relax maxPct if sum < 100 ───────────────────────────
         // (Happens when TXT ingredients are removed and their pct-based maxPct no longer sums to 100)
+        // ÖNEMLI: Aylık limit (hardMaxByCode) nedeniyle sum < 100 ise, ölçekleme bu limitleri aşamaz.
         var autoRelaxed = false
         let sumMaxSolver = minMaxFixed.reduce(0.0) { $0 + $1.maxPct }
-        let readyIngs: [SolverIngredient]
+        var readyIngs: [SolverIngredient]
         if sumMaxSolver < 100 - 1e-6 {
             let scale = 100.0 / sumMaxSolver
             readyIngs = minMaxFixed.map { i in
@@ -215,6 +221,18 @@ final class FormulaEditorVM {
             autoRelaxed = true
         } else {
             readyIngs = minMaxFixed
+        }
+        // Aylık limit kaplarını autoRelaxed'ın üzerine yeniden uygula
+        // → ölçekleme hiçbir zaman aylık limiti aşamaz
+        if !hardMaxByCode.isEmpty {
+            readyIngs = readyIngs.map { i in
+                guard let cap = hardMaxByCode[i.code] else { return i }
+                return SolverIngredient(code: i.code, name: i.name,
+                                        priceTLPerTon: i.priceTLPerTon,
+                                        minPct: i.minPct,
+                                        maxPct: min(i.maxPct, cap),
+                                        nutrients: i.nutrients)
+            }
         }
 
         // ── Build nutritional constraints — ALL user-set active constraints go in ─
@@ -314,7 +332,7 @@ final class FormulaEditorVM {
         // Save original mixPct values BEFORE the LP result overwrites them.
         // This map is used later for nutrient calculation when LP returned no percentages.
         let originalMixPct: [String: Double] = Dictionary(
-            uniqueKeysWithValues: ingredients.map { ($0.code, $0.mixPct) }
+            ingredients.map { ($0.code, $0.mixPct) }, uniquingKeysWith: { first, _ in first }
         )
 
         // ── Write results back ────────────────────────────────────────────────
@@ -539,7 +557,7 @@ struct FormulaEditorView: View {
                         .font(.caption2.bold()).foregroundStyle(diffColor)
                 }
             }
-            .frame(width: 60)
+            .frame(minWidth: 44, maxWidth: 72)
 
             VStack(spacing: 2) {
                 Text("Güncel Üretim").font(.caption2).foregroundStyle(.secondary)
@@ -583,7 +601,7 @@ struct FormulaEditorView: View {
                         .keyboardType(.numberPad)
                         .multilineTextAlignment(.trailing)
                         .font(.subheadline)
-                        .frame(width: 80)
+                        .frame(minWidth: 60, maxWidth: 90)
                 }
             }
             .padding(.horizontal, 16)
@@ -1281,32 +1299,56 @@ private struct IngredientEditorRow: View {
                         VStack(alignment: .trailing, spacing: 1) {
                             Text(String(format: "%.2f%%", ing.mixPct))
                                 .font(.subheadline.bold()).foregroundColor(.accentColor)
-                            Text((ing.mixPct / 100 * totalKg).kgString)
+                            let kg = ing.mixPct / 100.0 * totalKg
+                            Text(kg.kgString)
                                 .font(.caption2).foregroundStyle(.secondary)
                             // Delta: önceki çözümle karşılaştır
                             if ing.previousMixPct > 0.001 {
-                                let diff = ing.mixPct - ing.previousMixPct
+                                // Önceden de rasyondaydı — değişim göster
+                                let diff   = ing.mixPct - ing.previousMixPct
+                                let diffKg = diff / 100.0 * totalKg
                                 if abs(diff) > 0.01 {
                                     HStack(spacing: 2) {
                                         Image(systemName: diff > 0
                                               ? "arrow.up.circle.fill"
                                               : "arrow.down.circle.fill")
                                             .font(.system(size: 9, weight: .bold))
-                                        Text(String(format: "%+.2f%%", diff))
-                                            .font(.system(size: 10, weight: .bold).monospacedDigit())
+                                        VStack(alignment: .trailing, spacing: 0) {
+                                            Text(String(format: "%+.0f kg", diffKg))
+                                                .font(.system(size: 10, weight: .bold).monospacedDigit())
+                                            Text(String(format: "%+.2f%%", diff))
+                                                .font(.system(size: 9).monospacedDigit())
+                                        }
                                     }
                                     .foregroundStyle(diff > 0 ? .green : .red)
                                 }
+                            } else {
+                                // Önceki çözümde yoktu — yeni giriyor
+                                HStack(spacing: 2) {
+                                    Image(systemName: "plus.circle.fill")
+                                        .font(.system(size: 9, weight: .bold))
+                                    VStack(alignment: .trailing, spacing: 0) {
+                                        Text(String(format: "+%.0f kg", kg))
+                                            .font(.system(size: 10, weight: .bold).monospacedDigit())
+                                        Text("Yeni")
+                                            .font(.system(size: 9))
+                                    }
+                                }
+                                .foregroundStyle(.green)
                             }
                         }
                     } else if ing.previousMixPct > 0.001 {
                         // ── Rasyondan çıktı ─────────────────────────────────
+                        let prevKg = ing.previousMixPct / 100.0 * totalKg
                         VStack(alignment: .trailing, spacing: 2) {
                             Image(systemName: "minus.circle.fill")
                                 .font(.caption).foregroundStyle(.red)
-                            Text(String(format: "−%.2f%%", ing.previousMixPct))
+                            Text(String(format: "−%.0f kg", prevKg))
                                 .font(.system(size: 10, weight: .bold).monospacedDigit())
                                 .foregroundStyle(.red)
+                            Text(String(format: "(−%.2f%%)", ing.previousMixPct))
+                                .font(.system(size: 9).monospacedDigit())
+                                .foregroundStyle(.red.opacity(0.8))
                             Text("çıktı").font(.caption2).foregroundStyle(.secondary)
                         }
                     }
@@ -1344,7 +1386,7 @@ private struct IngredientEditorRow: View {
             TextField("Kütüph.", text: binding)
                 .keyboardType(.numberPad)
                 .multilineTextAlignment(.trailing)
-                .frame(width: 70)
+                .frame(minWidth: 50, maxWidth: 80)
                 .font(.caption.bold())
         }
     }
@@ -1370,7 +1412,7 @@ private struct CompactDoubleField: View {
             TextField("0.00", text: $text)
                 .keyboardType(.decimalPad)
                 .multilineTextAlignment(.center)
-                .frame(width: 58)
+                .frame(minWidth: 44, maxWidth: 68)
                 .font(.caption.bold().monospacedDigit())
                 .padding(.horizontal, 6)
                 .padding(.vertical, 4)
@@ -1471,7 +1513,7 @@ private struct ConstraintOptionalField: View {
             TextField("—", text: $text)
                 .keyboardType(.decimalPad)
                 .multilineTextAlignment(.center)
-                .frame(width: 64)
+                .frame(minWidth: 48, maxWidth: 72)
                 .font(.caption.bold().monospacedDigit())
                 .padding(.horizontal, 6)
                 .padding(.vertical, 4)
@@ -1719,19 +1761,12 @@ struct NutrientBreakdownSheet: View {
                                             item.mixPct, item.nutrientPer100,
                                             item.contribution, target.unit))
                                     .font(.caption2).foregroundStyle(.tertiary)
-                                // İlerleme çubuğu
-                                GeometryReader { geo in
-                                    ZStack(alignment: .leading) {
-                                        Capsule()
-                                            .fill(Color(.systemFill))
-                                            .frame(height: 5)
-                                        Capsule()
-                                            .fill(barColors[idx % barColors.count])
-                                            .frame(
-                                                width: max(geo.size.width * share, 2),
-                                                height: 5
-                                            )
-                                    }
+                                // İlerleme çubuğu — scaleEffect ile GeometryReader layout pass yok
+                                ZStack(alignment: .leading) {
+                                    Capsule().fill(Color(.systemFill))
+                                    Capsule()
+                                        .fill(barColors[idx % barColors.count])
+                                        .scaleEffect(x: max(share, 0.005), anchor: .leading)
                                 }
                                 .frame(height: 5)
                             }

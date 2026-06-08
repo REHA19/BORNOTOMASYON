@@ -189,7 +189,8 @@ enum RationSolver {
         }
 
         // ── Simplex iterations ────────────────────────────────────────────────
-        let maxIter = 1500
+        // maxIter: büyük formüller (30+ hammadde, 20+ besin kısıtı) için 5000 gerekli olabilir
+        let maxIter = 5000
         for _ in 0..<maxIter {
             var pivCol = -1; var minRC = -1e-9
             for j in 0..<(cols - 1) {

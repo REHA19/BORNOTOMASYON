@@ -162,6 +162,8 @@ struct MultiBlendDetailView: View {
     @State private var renameText        = ""
     /// Hesaplama öncesi her hammaddenin aylık ton değeri — delta gösterimi için
     @State private var prevIngTons:      [String: Double]      = [:]
+    /// combinedIngredients cache — her render'da yeniden hesaplanmaz
+    @State private var cachedCombinedIngs: [CombinedIng]      = []
 
     struct SolveResult {
         let ok:      Bool
@@ -190,44 +192,54 @@ struct MultiBlendDetailView: View {
         }
     }
 
-    // Union of all ingredients across group formulas (deduplicated by code)
-    private var combinedIngredients: [CombinedIng] {
-        var seen        = Set<String>()
-        var result      = [CombinedIng]()
-        // Pre-compute per-ingredient formula count in one pass (O(N×M) yerine O(M))
-        var countMap    = [String: Int]()
-        for formula in groupFormulas {
+    // ── combinedIngredients — sadece gerektiğinde hesaplanır, cachedCombinedIngs'e yazılır ──
+
+    /// Her render'da çalışmaz — sadece explicit trigger'larda çağrılır.
+    /// O(1) dictionary lookup ile lineer IngredientMatcher.find() yerine geçer.
+    private func refreshCombinedIngs() {
+        let formulas = groupFormulas
+        // Sadece formüllerde kullanılan + stokYok kodlarını yükle — tüm kütüphane yerine
+        let neededCodes: Set<String> = Set(
+            formulas.flatMap { $0.ingredients.map { $0.code } } + group.stokYokCodes
+        )
+        let fullLibByCode: [String: FeedIngredient] = Dictionary(
+            library.filter { neededCodes.contains($0.code) }.map { ($0.code, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        var seen     = Set<String>()
+        var result   = [CombinedIng]()
+        var countMap = [String: Int]()
+        for formula in formulas {
             var seenInFormula = Set<String>()
             for ing in formula.ingredients where !seenInFormula.contains(ing.code) {
                 seenInFormula.insert(ing.code)
                 countMap[ing.code, default: 0] += 1
             }
         }
-        for formula in groupFormulas {
+        for formula in formulas {
             for ing in formula.ingredients {
                 guard !seen.contains(ing.code) else { continue }
                 seen.insert(ing.code)
-                let lib = IngredientMatcher.find(code: ing.code, name: ing.name, in: library)
+                let lib = fullLibByCode[ing.code]
                 result.append(CombinedIng(code: ing.code, name: ing.name,
                                           formulaCount: countMap[ing.code] ?? 1, libEntry: lib))
             }
         }
         // STOK YOK olarak işaretlenmiş ancak formülden çıkmış hammaddeleri de göster
         for code in group.stokYokCodes where !seen.contains(code) {
-            if let lib = library.first(where: { $0.code == code }) {
+            if let lib = fullLibByCode[code] {
                 seen.insert(code)
                 result.append(CombinedIng(code: code, name: lib.name,
                                           formulaCount: 0, libEntry: lib))
             }
         }
-        // monthlyTons'u tüm hammaddeler için bir kerede hesapla, struct'a göm
-        // → ingredientRow her satırda ayrı reduce yapmak zorunda kalmaz
+        // monthlyTons — tek nested loop, dict lookup
         let tons = group.productionTons
-        // Önce formül başına ingredients dict'i kur (her formül için tek decode)
-        let ingsByFormula: [[String: Double]] = groupFormulas.map { f in
-            Dictionary(uniqueKeysWithValues: f.ingredients.map { ($0.code, $0.mixPct) })
+        let ingsByFormula: [[String: Double]] = formulas.map { f in
+            Dictionary(f.ingredients.map { ($0.code, $0.mixPct) }, uniquingKeysWith: { first, _ in first })
         }
-        let formTons = groupFormulas.map { tons[$0.code] ?? 0.0 }
+        let formTons = formulas.map { tons[$0.code] ?? 0.0 }
         for i in result.indices {
             var usage = 0.0
             for fi in ingsByFormula.indices {
@@ -235,14 +247,12 @@ struct MultiBlendDetailView: View {
             }
             result[i].monthlyTons = usage
         }
-        let usageCache = Dictionary(uniqueKeysWithValues: result.map { ($0.code, $0.monthlyTons) })
-        return result.sorted {
-            // Stokta olmayan hammaddeler her zaman listenin altında görünür
+        let usageCache = Dictionary(result.map { ($0.code, $0.monthlyTons) }, uniquingKeysWith: { first, _ in first })
+        cachedCombinedIngs = result.sorted {
             let av0 = $0.libEntry?.isAvailable ?? true
             let av1 = $1.libEntry?.isAvailable ?? true
             if av0 != av1 { return av0 }
-            let u0 = usageCache[$0.code] ?? 0
-            let u1 = usageCache[$1.code] ?? 0
+            let u0 = usageCache[$0.code] ?? 0; let u1 = usageCache[$1.code] ?? 0
             if abs(u0 - u1) > 0.0001 { return u0 > u1 }
             return $0.name < $1.name
         }
@@ -365,7 +375,13 @@ struct MultiBlendDetailView: View {
         }
         .navigationTitle(group.name)
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { }
+        .onAppear {
+            // Navigasyon animasyonu bittikten SONRA çalıştır — ekranın donmaması için
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(400))
+                refreshCombinedIngs()
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
@@ -675,10 +691,10 @@ struct MultiBlendDetailView: View {
                     }
                 }
             }
-            // Hammadde değişimi — tüm değişen hammaddeler, artanlar yeşil / azalanlar kırmızı
+            // Hammadde değişimi — giren/çıkan/değişen TÜM hammaddeler (previousMixPct > 0 koşulu kaldırıldı)
             if solveResults[formula.code] != nil {
                 let changes = formula.ingredients
-                    .filter { abs($0.mixPct - $0.previousMixPct) >= 0.5 && $0.previousMixPct > 0 }
+                    .filter { abs($0.mixPct - $0.previousMixPct) >= 0.5 }
                     .sorted { lhs, rhs in
                         let ld = lhs.mixPct - lhs.previousMixPct
                         let rd = rhs.mixPct - rhs.previousMixPct
@@ -686,17 +702,34 @@ struct MultiBlendDetailView: View {
                         return abs(ld) > abs(rd)
                     }
                 if !changes.isEmpty {
+                    // Denge: artan kg toplamı = azalan kg toplamı (LP garantisi)
+                    let inKg  = changes.filter { $0.mixPct > $0.previousMixPct }
+                                       .reduce(0.0) { $0 + ($1.mixPct - $1.previousMixPct) / 100.0 * formula.totalKg }
+                    let outKg = changes.filter { $0.mixPct < $0.previousMixPct }
+                                       .reduce(0.0) { $0 + ($1.previousMixPct - $1.mixPct) / 100.0 * formula.totalKg }
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(Array(changes), id: \.id) { ing in
-                            let diff = ing.mixPct - ing.previousMixPct
+                            let diffPct = ing.mixPct - ing.previousMixPct
+                            let diffKg  = diffPct / 100.0 * formula.totalKg
                             HStack(spacing: 3) {
-                                Image(systemName: diff > 0 ? "arrow.up" : "arrow.down")
+                                Image(systemName: diffPct > 0 ? "arrow.up" : "arrow.down")
                                     .font(.system(size: 8, weight: .bold))
-                                Text("\(String(ing.name.prefix(14))): \(String(format: "%+.1f%%", diff))")
+                                Text("\(String(ing.name.prefix(12))): \(String(format: "%+.0f kg", diffKg)) (\(String(format: "%+.1f%%", diffPct)))")
                                     .font(.system(size: 10))
                                     .lineLimit(1)
                             }
-                            .foregroundStyle(diff > 0 ? .green : .red)
+                            .foregroundStyle(diffPct > 0 ? .green : .red)
+                        }
+                        // Denge özeti — giren ve çıkan kg'lar eşit olmalı
+                        if inKg > 0.5 || outKg > 0.5 {
+                            HStack(spacing: 4) {
+                                Image(systemName: abs(inKg - outKg) < 1.0
+                                      ? "checkmark.circle" : "exclamationmark.circle")
+                                    .font(.system(size: 8))
+                                Text(String(format: "↑%.0f kg  ↓%.0f kg", inKg, outKg))
+                                    .font(.system(size: 9, weight: .bold).monospacedDigit())
+                            }
+                            .foregroundStyle(abs(inKg - outKg) < 1.0 ? Color.secondary : Color.orange)
                         }
                     }
                 }
@@ -714,7 +747,7 @@ struct MultiBlendDetailView: View {
     // MARK: - Ortak Hammaddeler section
 
     private var ingredientsSection: some View {
-        let items = combinedIngredients   // tek seferde hesapla
+        let items = cachedCombinedIngs   // cache'ten oku — her render'da hesaplanmaz
         return Section {
             if items.isEmpty {
                 Text("Formül eklendikçe hammaddeler burada listelenir.")
@@ -984,7 +1017,7 @@ struct MultiBlendDetailView: View {
     // MARK: - Stok Yönetimi
 
     private var hasUnavailableIngredients: Bool {
-        combinedIngredients.contains { !($0.libEntry?.isAvailable ?? true) }
+        cachedCombinedIngs.contains { !($0.libEntry?.isAvailable ?? true) }
     }
 
     private func toggleIngredientAvailability(_ item: CombinedIng) {
@@ -1008,10 +1041,11 @@ struct MultiBlendDetailView: View {
             if changed { formula.ingredients = ings }
         }
         try? context.save()
+        refreshCombinedIngs()
     }
 
     private func activateAllIngredients() {
-        for item in combinedIngredients {
+        for item in cachedCombinedIngs {
             guard let lib = item.libEntry, !lib.isAvailable else { continue }
             lib.isAvailable = true
             group.clearStokYok(item.code)
@@ -1026,6 +1060,7 @@ struct MultiBlendDetailView: View {
             }
         }
         try? context.save()
+        refreshCombinedIngs()
     }
 
     private func priceField(for item: CombinedIng) -> some View {
@@ -1060,6 +1095,7 @@ struct MultiBlendDetailView: View {
         }
         group.productionTons = tons
         try? context.save()
+        refreshCombinedIngs()
     }
 
     // MARK: - Batch calculate — tüm formüller paralel arka planda çözülür
@@ -1076,8 +1112,10 @@ struct MultiBlendDetailView: View {
         try? await Task.sleep(for: .milliseconds(60))
 
         // Hesaplama öncesi ortak hammadde tonlarını kaydet (delta gösterimi için)
-        prevIngTons = Dictionary(uniqueKeysWithValues:
-            combinedIngredients.map { ($0.code, $0.monthlyTons) })
+        // cachedCombinedIngs kullanılır — combinedIngredients pahalı re-compute tetiklenmez
+        prevIngTons = Dictionary(
+            cachedCombinedIngs.map { ($0.code, $0.monthlyTons) }, uniquingKeysWith: { first, _ in first }
+        )
 
         for formula in groupFormulas { previousCosts[formula.code] = formula.currentCostTL }
         solveResults = [:]
@@ -1121,9 +1159,12 @@ struct MultiBlendDetailView: View {
                         guard fTons > 0 else { continue }
                         let fMinPct = formula.ingredients.first { $0.code == ingCode }?.minPct ?? 0
                         let fMaxPct = formula.ingredients.first { $0.code == ingCode }?.maxPct ?? 0
+                        // totalUsage = 0 → ilk hesaplamada eşit pay yerine üretim tonajına orantılı pay
+                        let fTonsForShare = productionMap[formula.code] ?? 0
                         let share   = totalUsage > 0.001
                             ? (usageMap[formula.code] ?? 0) / totalUsage
-                            : 1.0 / Double(max(groupFormulas.count, 1))
+                            : (totalTons > 0 ? fTonsForShare / totalTons
+                                             : 1.0 / Double(max(groupFormulas.count, 1)))
                         var allocTons = max(maxT * share, fMinPct / 100.0 * fTons)
                         var cappedPct = allocTons / fTons * 100.0
                         if fMaxPct > 0 { cappedPct = min(cappedPct, fMaxPct) }
@@ -1139,14 +1180,15 @@ struct MultiBlendDetailView: View {
 
         // ── Her formül için çalışma paketi hazırla (main thread) ─────────────
         struct SolveWork: @unchecked Sendable {
-            let code:      String
-            let origIngs:  [BFIngredient]
-            let workIngs:  [BFIngredient]
-            let workCons:  [BFConstraint]
-            let combos:    [BFCombination]
-            let totalKg:   Double
-            let conflicts: [String]
-            let snap:      [IngSnap]   // kütüphane snapshot — Task.detached'a güvenle geçer
+            let code:         String
+            let origIngs:     [BFIngredient]
+            let workIngs:     [BFIngredient]
+            let workCons:     [BFConstraint]
+            let combos:       [BFCombination]
+            let totalKg:      Double
+            let conflicts:    [String]
+            let snap:         [IngSnap]   // kütüphane snapshot — Task.detached'a güvenle geçer
+            let hardMaxByCode: [String: Double]  // aylık limit kapları — autoRelaxed bunları aşamaz
         }
         struct SolveOut: @unchecked Sendable {
             let code:       String
@@ -1164,6 +1206,8 @@ struct MultiBlendDetailView: View {
             let hardMin  = proRataMinPct
             var wIngs    = formula.ingredients
             var conflicts: [String] = []
+            var hardMaxByCode: [String: Double] = [:]   // aylık limit kapları
+
             for i in wIngs.indices {
                 let code    = wIngs[i].code
                 let ingName = wIngs[i].name
@@ -1174,7 +1218,10 @@ struct MultiBlendDetailView: View {
                     let eCap = min(cap, eMax)
                     if eCap < fMin - 0.001 {
                         conflicts.append("⚠️ \(ingName): formül min %\(String(format:"%.2f",fMin)) > aylık MAX tavan %\(String(format:"%.2f",eCap)) — aylık limiti artırın")
-                    } else { wIngs[i].maxPct = eCap }
+                    } else {
+                        wIngs[i].maxPct  = eCap
+                        hardMaxByCode[code] = eCap   // autoRelaxed bu limiti aşamaz
+                    }
                 }
                 if let floor = hardMin[code], floor > 0 {
                     let eMax2 = wIngs[i].maxPct > 0 ? wIngs[i].maxPct : 100.0
@@ -1183,15 +1230,23 @@ struct MultiBlendDetailView: View {
                     } else { wIngs[i].minPct = max(fMin, floor) }
                 }
             }
+
+            // Bug 3 — aylık min floor'lar sum(minPct) > 100 yapıyorsa önceden haber ver
+            let activeMins = wIngs.filter { $0.isActive && $0.hasStock }.reduce(0.0) { $0 + $1.minPct }
+            if activeMins > 100 + 1e-4 {
+                conflicts.append("❌ Aylık minimum limitler bu formülde toplam min %\(String(format:"%.1f", activeMins)) > %100 — aylık min tonajlarını azaltın")
+            }
+
             workItems.append(SolveWork(
-                code:      formula.code,
-                origIngs:  formula.ingredients,
-                workIngs:  wIngs,
-                workCons:  formula.constraints,
-                combos:    formula.combinations,
-                totalKg:   formula.totalKg,
-                conflicts: conflicts,
-                snap:      libSnap
+                code:         formula.code,
+                origIngs:     formula.ingredients,
+                workIngs:     wIngs,
+                workCons:     formula.constraints,
+                combos:       formula.combinations,
+                totalKg:      formula.totalKg,
+                conflicts:    conflicts,
+                snap:         libSnap,
+                hardMaxByCode: hardMaxByCode
             ))
         }
 
@@ -1212,7 +1267,7 @@ struct MultiBlendDetailView: View {
                         vm.combinations = item.combos
                         vm.totalKgStr  = String(format: "%.0f", item.totalKg)
                         vm.loadPricesFromLibrary(item.snap)
-                        vm.solve(library: item.snap)
+                        vm.solve(library: item.snap, hardMaxByCode: item.hardMaxByCode)
                         return SolveOut(
                             code:       item.code,
                             origIngs:   item.origIngs,
@@ -1230,14 +1285,18 @@ struct MultiBlendDetailView: View {
 
         currentlySolvingName = nil
 
-        // ── Sonuçları TOPLU yazma — tek seferde tüm UI güncellenir ────────────
+        // ── Sonuçları ana akışta yaz — ayrı Task YOK (kullanıcı arayüzüyle çakışma olmaz) ──
+        // Her formül arasında Task.yield() → RunLoop UI'yı işleyebilir → donma yok
+        let formulaByCode: [String: BlendFormula] = Dictionary(
+            groupFormulas.map { ($0.code, $0) }, uniquingKeysWith: { first, _ in first }
+        )
         var newSolveResults = solveResults
         for out in outputs {
-            guard let formula = groupFormulas.first(where: { $0.code == out.code }) else { continue }
-            var finalIngs = out.resultIngs
+            guard let formula = formulaByCode[out.code] else { continue }
+            let origByCode = Dictionary(out.origIngs.map { ($0.code, $0) }, uniquingKeysWith: { first, _ in first })
+            var finalIngs  = out.resultIngs
             for i in finalIngs.indices {
-                let c = finalIngs[i].code
-                if let orig = out.origIngs.first(where: { $0.code == c }) {
+                if let orig = origByCode[finalIngs[i].code] {
                     finalIngs[i].minPct = orig.minPct
                     finalIngs[i].maxPct = orig.maxPct
                 }
@@ -1256,28 +1315,34 @@ struct MultiBlendDetailView: View {
             newSolveResults[out.code] = SolveResult(ok: feasible,
                                                     cost: formula.lastSolve?.costPerTon ?? 0,
                                                     message: msg)
+            await Task.yield()   // her formülden sonra RunLoop'a bir tur
         }
-        solveResults = newSolveResults  // tek render tetikler
+        solveResults = newSolveResults
 
         // ── Post-solve: aylık MIN/MAX doğrulaması (limit varsa) ───────────────
         if !limitsMap.isEmpty, totalTons > 0 {
+            let ingsByFormula: [String: [String: BFIngredient]] = Dictionary(
+                groupFormulas.map { f in
+                    (f.code, Dictionary(f.ingredients.map { ($0.code, $0) }, uniquingKeysWith: { first, _ in first }))
+                }, uniquingKeysWith: { first, _ in first }
+            )
+            let libNameByCode = Dictionary(library.map { ($0.code, $0.name) }, uniquingKeysWith: { first, _ in first })
             for (ingCode, limit) in limitsMap {
-                let ingName = library.first { $0.code == ingCode }?.name ?? ingCode
+                let ingName = libNameByCode[ingCode] ?? ingCode
                 var actualTons: Double = 0
                 for formula in groupFormulas {
-                    let pct  = formula.ingredients.first { $0.code == ingCode }?.mixPct ?? 0
+                    let pct = ingsByFormula[formula.code]?[ingCode]?.mixPct ?? 0
                     actualTons += pct / 100.0 * (productionMap[formula.code] ?? 0)
                 }
-
                 if let minT = limit.minTons, minT > 0, actualTons < minT - 0.5 {
                     let shortage = minT - actualTons
                     let floor    = proRataMinPct[ingCode] ?? (minT / max(totalTons, 1) * 100.0)
                     for formula in groupFormulas {
-                        let fTons = productionMap[formula.code] ?? 0
+                        let fTons  = productionMap[formula.code] ?? 0
                         guard fTons > 0 else { continue }
-                        let mixPct = formula.ingredients.first { $0.code == ingCode }?.mixPct ?? 0
+                        let ingInF = ingsByFormula[formula.code]?[ingCode]
+                        let mixPct = ingInF?.mixPct ?? 0
                         guard mixPct / 100.0 * fTons < floor / 100.0 * fTons - 0.1 else { continue }
-                        let ingInF = formula.ingredients.first { $0.code == ingCode }
                         let reason: String
                         if ingInF == nil { reason = "hammadde formülde tanımlı değil" }
                         else if let fMax = ingInF?.maxPct, fMax > 0, fMax < floor - 0.001 {
@@ -1291,12 +1356,11 @@ struct MultiBlendDetailView: View {
                             message: (prev?.message ?? "").isEmpty ? warn : (prev?.message ?? "") + "\n" + warn)
                     }
                 }
-
                 if let maxT = limit.maxTons, actualTons > maxT + 0.5 {
                     let excess = actualTons - maxT
                     let warn   = "⚠️ MAX \(ingName): hedef ≤\(String(format:"%.1f",maxT))t → gerçek \(String(format:"%.1f",actualTons))t (\(String(format:"%.1f",excess))t fazla)"
                     for formula in groupFormulas {
-                        let pct = formula.ingredients.first { $0.code == ingCode }?.mixPct ?? 0
+                        let pct = ingsByFormula[formula.code]?[ingCode]?.mixPct ?? 0
                         guard (productionMap[formula.code] ?? 0) > 0, pct > 0.001 else { continue }
                         let prev = solveResults[formula.code]
                         solveResults[formula.code] = SolveResult(
@@ -1309,26 +1373,9 @@ struct MultiBlendDetailView: View {
         }
 
         // context.save() kasıtlı yok — CloudKit WAL checkpoint'ini önler.
-        // "Kaydet" butonu ile kaydedilir; onDisappear'da da otomatik kaydedilir.
-        await Task.yield()
-        syncIngredientAvailability()
         isCalculating = false
-    }
-
-    // Hiçbir formülde kullanılmayan hammaddeleri devre dışı bırakır.
-    // Kullanılan hammaddelere dokunmaz — manuel "stokta yok" ayarı korunur.
-    private func syncIngredientAvailability() {
-        let usedCodes: Set<String> = allGroups.reduce(into: Set<String>()) { codes, grp in
-            for fCode in grp.formulaCodes {
-                if let formula = allFormulas.first(where: { $0.code == fCode }) {
-                    formula.ingredients.forEach { codes.insert($0.code) }
-                }
-            }
-        }
-        for ing in library where !usedCodes.contains(ing.code) && ing.isAvailable {
-            ing.isAvailable = false
-        }
-        // context.save() yok — CloudKit sync tetiklenmez
+        await Task.yield()
+        refreshCombinedIngs()
     }
 }
 
@@ -1355,7 +1402,7 @@ private struct IngredientLimitFields: View {
                 TextField("—", text: $minText)
                     .keyboardType(.decimalPad)
                     .multilineTextAlignment(.trailing)
-                    .frame(width: 60)
+                    .frame(minWidth: 44, maxWidth: 72)
                     .font(.caption)
                     .focused($focused, equals: .min)
                     .onSubmit { commitMin() }
@@ -1376,7 +1423,7 @@ private struct IngredientLimitFields: View {
                 TextField("—", text: $maxText)
                     .keyboardType(.decimalPad)
                     .multilineTextAlignment(.trailing)
-                    .frame(width: 60)
+                    .frame(minWidth: 44, maxWidth: 72)
                     .font(.caption)
                     .focused($focused, equals: .max)
                     .onSubmit { commitMax() }
@@ -1445,7 +1492,7 @@ private struct ProductionTonsField: View {
             TextField("—", text: $text)
                 .keyboardType(.decimalPad)
                 .multilineTextAlignment(.trailing)
-                .frame(width: 60)
+                .frame(minWidth: 44, maxWidth: 72)
                 .font(.caption.bold())
                 .focused($isFocused)
                 .onSubmit { commit() }
@@ -1497,7 +1544,7 @@ private struct IngredientPriceField: View {
             TextField("—", text: $text)
                 .keyboardType(.decimalPad)
                 .multilineTextAlignment(.trailing)
-                .frame(width: 70)
+                .frame(minWidth: 50, maxWidth: 80)
                 .font(.caption.bold())
                 .focused($focused)
                 .onSubmit    { commit() }
@@ -1719,16 +1766,13 @@ private struct IngredientUsageDetailSheet: View {
                                 .id(item.id)   // aktif/pasif geçişinde state'i sıfırla
 
                                 if totalTons > 0 && item.tons > 0 {
-                                    GeometryReader { geo in
-                                        ZStack(alignment: .leading) {
-                                            Capsule().fill(Color(.systemFill)).frame(height: 5)
-                                            Capsule()
-                                                .fill(Color.indigo.opacity(0.7))
-                                                .frame(
-                                                    width: geo.size.width * min(item.tons / totalTons, 1),
-                                                    height: 5
-                                                )
-                                        }
+                                    // scaleEffect kullanılır — GeometryReader layout pass yok
+                                    let ratio = min(item.tons / totalTons, 1.0)
+                                    ZStack(alignment: .leading) {
+                                        Capsule().fill(Color(.systemFill))
+                                        Capsule()
+                                            .fill(Color.indigo.opacity(0.7))
+                                            .scaleEffect(x: ratio, anchor: .leading)
                                     }
                                     .frame(height: 5)
                                 }
@@ -1781,7 +1825,7 @@ private struct FormulaIngConstraintRow: View {
                 TextField("—", text: $minText)
                     .keyboardType(.decimalPad)
                     .multilineTextAlignment(.trailing)
-                    .frame(width: 55)
+                    .frame(minWidth: 44, maxWidth: 65)
                     .font(.caption)
                     .focused($focused, equals: .min)
                     .onChange(of: focused) { old, new in
@@ -1802,7 +1846,7 @@ private struct FormulaIngConstraintRow: View {
                 TextField("—", text: $maxText)
                     .keyboardType(.decimalPad)
                     .multilineTextAlignment(.trailing)
-                    .frame(width: 55)
+                    .frame(minWidth: 44, maxWidth: 65)
                     .font(.caption)
                     .focused($focused, equals: .max)
                     .onChange(of: focused) { old, new in

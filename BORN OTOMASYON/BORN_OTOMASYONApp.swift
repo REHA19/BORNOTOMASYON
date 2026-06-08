@@ -36,23 +36,26 @@ struct BornOtomasyonApp: App {
 
     private static let ckContainerID = "iCloud.com.rehabasmaci.BORNOTOM"
 
-    // CloudKit'te sync'lenen ana modeller (FormulaCostEntry henüz yeni — local-only)
+    // CloudKit'te sync'lenen ana modeller
     private static let ckModels: [any PersistentModel.Type] = [
         FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
         FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self
     ]
 
-    private static func makeContainer() -> ModelContainer {
-        // Auto-nuke kaldırıldı — veri güvenliği için
+    // Local-only modeller (FormulaCostEntry + ProductPricingMeta CloudKit sync yok)
+    private static let localModels: [any PersistentModel.Type] = [
+        FormulaCostEntry.self, ProductPricingMeta.self
+    ]
 
-        // 1. CloudKit (ana modeller) + Local (FormulaCostEntry ayrı store)
-        //    FormulaCostEntry'yi ayırmak loadIssueModelContainer hatasını çözer.
-        //    CloudKit bağlanınca eski tüm veriler (formüller, hammaddeler) geri iner.
+    private static func makeContainer() -> ModelContainer {
+        let fullSchema = Schema([
+            FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
+            FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self,
+            FormulaCostEntry.self, ProductPricingMeta.self
+        ])
+
+        // 1. CloudKit + Local (tercih edilen)
         do {
-            let fullSchema = Schema([
-                FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
-                FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self, FormulaCostEntry.self
-            ])
             let ckConfig = ModelConfiguration(
                 "ckStore",
                 schema: Schema(ckModels),
@@ -60,7 +63,7 @@ struct BornOtomasyonApp: App {
             )
             let localConfig = ModelConfiguration(
                 "localStore",
-                schema: Schema([FormulaCostEntry.self]),
+                schema: Schema(localModels),
                 cloudKitDatabase: .none
             )
             let c = try ModelContainer(for: fullSchema, configurations: [ckConfig, localConfig])
@@ -70,11 +73,12 @@ struct BornOtomasyonApp: App {
             print("❌ BORN: CloudKit+local hatası: \(error)")
         }
 
-        // 2. CloudKit tek config (eski yöntem)
+        // 2. CloudKit tek config
         do {
             let c = try ModelContainer(
                 for: FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
-                    FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self, FormulaCostEntry.self,
+                    FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self,
+                    FormulaCostEntry.self, ProductPricingMeta.self,
                 configurations: ModelConfiguration(cloudKitDatabase: .private(ckContainerID))
             )
             print("✅ BORN: CloudKit container aktif")
@@ -87,7 +91,8 @@ struct BornOtomasyonApp: App {
         do {
             let c = try ModelContainer(
                 for: FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
-                    FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self, FormulaCostEntry.self,
+                    FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self,
+                    FormulaCostEntry.self, ProductPricingMeta.self,
                 configurations: ModelConfiguration(cloudKitDatabase: .none)
             )
             print("⚠️ BORN: Yerel store — sync YOK")
@@ -96,10 +101,11 @@ struct BornOtomasyonApp: App {
             print("❌ BORN: Yerel store hatası: \(error)")
         }
 
-        // 4. Son çare — nuke YOK
+        // 4. Son çare
         return try! ModelContainer(
             for: FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
-                FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self, FormulaCostEntry.self,
+                FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self,
+                FormulaCostEntry.self, ProductPricingMeta.self,
             configurations: ModelConfiguration(cloudKitDatabase: .none)
         )
     }
