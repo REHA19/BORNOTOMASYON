@@ -81,6 +81,10 @@ struct PricingPDFService {
     // MARK: - Ana üretim
     // ────────────────────────────────────────────────────────────────────
 
+    // Antet görselinin sayfadaki içerik başlangıç noktası (pt)
+    // Banner (~88) + adres (~70) = ~158 — biraz boşluk bırakarak 162
+    private static let antetContentY: CGFloat = 162
+
     static func generate(
         rows:         [(formula: BlendFormula, meta: ProductPricingMeta?)],
         ipCuval:      Double, firePct: Double, elektrik: Double,
@@ -118,11 +122,17 @@ struct PricingPDFService {
                 return $0.orderIdx < $1.orderIdx
             }
 
+        let hasAntet = UIImage(named: "AlapalaYemAntet") != nil
+
         let uniqueGroups = Set(visible.map { $0.category }).filter { !$0.isEmpty }.count
         let totalLines   = visible.count + uniqueGroups
-        // fixedH: banner(88) + adres(24) + gap(6) + bilgi+başlık(54) + tblHdr(22) + footer(38)
-        let fixedH: CGFloat = 88 + 24 + 6 + 54 + 22 + 38
-        let available    = PH - 2 * ML - fixedH
+
+        // Kullanılabilir yükseklik: antet varsa içerik alanı, yoksa çizilen header
+        let headerH: CGFloat = hasAntet
+            ? antetContentY + 18 + 22   // antetContentY + başlık + tblHdr
+            : 88 + 24 + 6 + 54 + 22     // banner+adres+gap+bilgi+tblHdr
+        let footerH: CGFloat = 38
+        let available  = PH - 2 * ML - headerH - footerH
         let rowH: CGFloat = totalLines > 0 ? max(9.5, min(13.5, available / CGFloat(totalLines))) : 11.5
         let grpH: CGFloat = rowH + 1.0
         let fSz:  CGFloat = rowH <= 10.0 ? 6.3 : (rowH <= 11.5 ? 6.8 : 7.3)
@@ -131,13 +141,24 @@ struct PricingPDFService {
         return renderer.pdfData { ctx in
             ctx.beginPage()
             var curY: CGFloat = 0
-            curY = drawBanner(y: curY)
-            curY = drawAddressBar(y: curY)
-            curY += 6
-            curY = drawInfoAndTitle(y: curY, period: period)
-            curY = drawTableHeader(y: curY, height: 22)
+
+            if let antet = UIImage(named: "AlapalaYemAntet") {
+                // ── Antet görseli tam sayfa arka plan ──────────────────
+                antet.draw(in: CGRect(x: 0, y: 0, width: PW, height: PH))
+                curY = antetContentY
+                curY = drawInfoAndTitle(y: curY, period: period)
+                curY = drawTableHeader(y: curY, height: 22)
+            } else {
+                // ── Programatik çizim (fallback) ───────────────────────
+                curY = drawBanner(y: curY)
+                curY = drawAddressBar(y: curY)
+                curY += 6
+                curY = drawInfoAndTitle(y: curY, period: period)
+                curY = drawTableHeader(y: curY, height: 22)
+            }
+
             curY = drawProducts(y: curY, rows: visible, rowH: rowH, grpH: grpH, fSz: fSz, vade: vade)
-            drawFooter(y: curY, fSz: fSz)
+            drawFooter(y: curY, fSz: fSz, hasAntet: hasAntet)
         }
     }
 
@@ -532,7 +553,7 @@ struct PricingPDFService {
     // MARK: - Footer
     // ────────────────────────────────────────────────────────────────────
 
-    private static func drawFooter(y: CGFloat, fSz: CGFloat) {
+    private static func drawFooter(y: CGFloat, fSz: CGFloat, hasAntet: Bool = false) {
         var curY = y + 5
         // Üst çizgi
         UIColor(white: 0.50, alpha: 1).setFill()
@@ -556,7 +577,8 @@ struct PricingPDFService {
               CGRect(x: ML, y: curY, width: txtW, height: lH),
               sz: fSz, clr: UIColor(white: 0.25, alpha: 1))
 
-        // ── ALBO AŞ kuruluşudur kutusu — sağ alt ────────────────────
+        // ── ALBO AŞ kuruluşudur kutusu — antet yoksa çiz ────────────
+        guard !hasAntet else { return }
         let boxW: CGFloat = 78
         let boxH: CGFloat = lH * 3.2
         let boxX = ML + C.total - boxW
