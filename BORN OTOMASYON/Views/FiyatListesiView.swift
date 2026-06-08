@@ -17,6 +17,7 @@ struct FiyatListesiView: View {
     let label3:       String
     let label4:       String
     let label5:       String
+    var extraItems:   [(value: Double, isPercent: Bool)] = []
 
     @Environment(\.dismiss)      private var dismiss
     @Environment(\.modelContext) private var context
@@ -147,7 +148,8 @@ struct FiyatListesiView: View {
                 ipCuval: vals.0, firePct: vals.1,
                 elektrik: vals.2, nakliye: vals.3,
                 iscilik: vals.4, globalKarPct: vals.5,
-                vade: config, period: capturedPeriod
+                vade: config, period: capturedPeriod,
+                extraItems: extraItems
             )
 
             // Arşiv dosyası: Documents/FiyatListesi_Alapala_2026-06-08_1430.pdf

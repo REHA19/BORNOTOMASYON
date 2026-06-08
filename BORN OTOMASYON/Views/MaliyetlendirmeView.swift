@@ -1,12 +1,15 @@
 import SwiftUI
 import SwiftData
+import PhotosUI
 
 // MARK: - Ana Maliyetlendirme Ekranı
 
 struct MaliyetlendirmeView: View {
     @Environment(\.modelContext) private var context
-    @Query(sort: \BlendFormula.code)            private var formulas: [BlendFormula]
-    @Query(sort: \ProductPricingMeta.orderIndex) private var metas:   [ProductPricingMeta]
+    @Query(sort: \BlendFormula.code)            private var formulas:   [BlendFormula]
+    @Query(sort: \ProductPricingMeta.orderIndex) private var metas:     [ProductPricingMeta]
+    @Query(sort: \BrandDefinition.orderIndex)    private var brandDefs:  [BrandDefinition]
+    @Query(sort: \KategoriTanim.orderIndex)      private var allKatDefs: [KategoriTanim]
 
     // Seçili marka
     @AppStorage("pricing_selected_brand") private var selectedBrand: String = "Alapala"
@@ -33,13 +36,43 @@ struct MaliyetlendirmeView: View {
     @AppStorage("pricing_label_4") private var label4: String = "Nakliye"
     @AppStorage("pricing_label_5") private var label5: String = "İşçilik"
 
-    @State private var showSettings    = false
-    @State private var editTarget:     BlendFormula? = nil
-    @State private var showFiyatListesi = false
-    @State private var showArchive      = false
-    @State private var showLabelEditor  = false
+    @Query(sort: \GiderKalemi.orderIndex) private var tumGiderler: [GiderKalemi]
 
-    private let brands = ["Alapala", "Karadeniz"]
+    @State private var showSettings      = false
+    @State private var editTarget:       BlendFormula? = nil
+    @State private var showFiyatListesi  = false
+    @State private var showArchive       = false
+    @State private var showLabelEditor   = false
+    @State private var showIskontoAnaliz = false
+    @State private var showAddGider      = false
+    @State private var showSiralama      = false
+    @State private var showBrandYonetim  = false
+    @State private var showKatYonetim    = false
+
+    // Dinamik marka listesi (yoksa varsayılan)
+    private var brands: [String] {
+        brandDefs.isEmpty ? ["Alapala", "Karadeniz"] : brandDefs.map(\.name)
+    }
+
+    // Aktif markanın kategorileri
+    private var aktifKategoriler: [KategoriTanim] {
+        allKatDefs.filter { $0.brand == selectedBrand }
+    }
+
+    // Aktif markanın BrandDefinition'ı
+    private var aktifBrandDef: BrandDefinition? {
+        brandDefs.first { $0.name == selectedBrand }
+    }
+
+    // Aktif markaya ait dinamik gider kalemleri
+    private var aktifGiderler: [GiderKalemi] {
+        tumGiderler.filter { $0.brand == selectedBrand }
+    }
+
+    // PricingCalc'a gönderilecek tuple listesi
+    private var extraItems: [(value: Double, isPercent: Bool)] {
+        aktifGiderler.map { (value: $0.value, isPercent: $0.isPercent) }
+    }
 
     // Aktif marka değerleri
     private var ipCuval:  Double { selectedBrand == "Alapala" ? ipCuvalA  : ipCuvalK  }
@@ -107,16 +140,27 @@ struct MaliyetlendirmeView: View {
                     } else {
                         ForEach(rows, id: \.formula.code) { row in
                             PricingProductRow(
-                                formula:  row.formula,
-                                meta:     row.meta,
-                                ipCuval:  ipCuval, firePct:  firePct,
-                                elektrik: elektrik, nakliye: nakliye,
-                                iscilik:  iscilik, karPct:   karPct,
+                                formula:    row.formula,
+                                meta:       row.meta,
+                                ipCuval:    ipCuval, firePct:  firePct,
+                                elektrik:   elektrik, nakliye: nakliye,
+                                iscilik:    iscilik, karPct:   karPct,
                                 label1: label1, label2: label2,
-                                label3: label3, label4: label4, label5: label5
+                                label3: label3, label4: label4, label5: label5,
+                                extraItems: extraItems
                             )
                             .contentShape(Rectangle())
                             .onTapGesture { editTarget = row.formula }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                ForEach(brands.filter { $0 != selectedBrand }, id: \.self) { hedef in
+                                    Button {
+                                        aktarUrun(row, to: hedef)
+                                    } label: {
+                                        Label(hedef, systemImage: "arrow.right.square.fill")
+                                    }
+                                    .tint(.blue)
+                                }
+                            }
                         }
                     }
                 } header: {
@@ -133,17 +177,33 @@ struct MaliyetlendirmeView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    HStack(spacing: 14) {
-                        Button { showArchive = true } label: {
-                            Image(systemName: "clock.arrow.circlepath")
+                    HStack(spacing: 12) {
+                        Menu {
+                            Button { showBrandYonetim = true } label: {
+                                Label("Marka Yönetimi", systemImage: "building.2")
+                            }
+                            Button { showKatYonetim = true } label: {
+                                Label("Kategori Ayarları", systemImage: "square.grid.2x2")
+                            }
+                            Button { showSiralama = true } label: {
+                                Label("Ürün Sıralama", systemImage: "arrow.up.arrow.down")
+                            }
+                            Button { showArchive = true } label: {
+                                Label("Arşiv", systemImage: "clock.arrow.circlepath")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        Button { showIskontoAnaliz = true } label: {
+                            Image(systemName: "percent").foregroundStyle(.green)
                         }
                         Button { showFiyatListesi = true } label: {
-                            Image(systemName: "doc.richtext.fill")
-                                .foregroundStyle(.orange)
+                            Image(systemName: "doc.richtext.fill").foregroundStyle(.orange)
                         }
                     }
                 }
             }
+            .onAppear { seedDefaultsIfNeeded() }
             .sheet(item: $editTarget) { formula in
                 ProductPricingMetaSheet(
                     formula:      formula,
@@ -162,7 +222,10 @@ struct MaliyetlendirmeView: View {
                     elektrik:    elektrik, nakliye: nakliye,
                     iscilik:     iscilik, globalKarPct: karPct,
                     label1: label1, label2: label2,
-                    label3: label3, label4: label4, label5: label5
+                    label3: label3, label4: label4, label5: label5,
+                    extraItems:  extraItems,
+                    antetImage:  aktifBrandDef?.antetImage,
+                    kategoriler: aktifKategoriler
                 )
             }
             .sheet(isPresented: $showLabelEditor) {
@@ -170,6 +233,28 @@ struct MaliyetlendirmeView: View {
                     label1: $label1, label2: $label2,
                     label3: $label3, label4: $label4, label5: $label5
                 )
+            }
+            .sheet(isPresented: $showIskontoAnaliz) {
+                IskontoAnalizView(
+                    rows:        rows,
+                    ipCuval:     ipCuval, firePct:  firePct,
+                    elektrik:    elektrik, nakliye: nakliye,
+                    iscilik:     iscilik, globalKarPct: karPct,
+                    extraItems:  extraItems
+                )
+            }
+            .sheet(isPresented: $showAddGider) {
+                GiderKalemiEkleSheet(brand: selectedBrand,
+                                     nextOrder: aktifGiderler.count)
+            }
+            .sheet(isPresented: $showSiralama) {
+                UrunSiralamaView(brand: selectedBrand)
+            }
+            .sheet(isPresented: $showBrandYonetim) {
+                BrandYonetimView()
+            }
+            .sheet(isPresented: $showKatYonetim) {
+                KategoriYonetimView(brand: selectedBrand)
             }
             .navigationDestination(isPresented: $showArchive) {
                 PriceListArchiveView(brand: selectedBrand)
@@ -181,11 +266,53 @@ struct MaliyetlendirmeView: View {
 
     private var globalSettingsContent: some View {
         VStack(spacing: 0) {
+            // ── 5 sabit kalem ─────────────────────────────────────────
             PricingInputRow(label: label1, unit: "₺/ton", value: ipCuvalB)
             PricingInputRow(label: label2, unit: "%",      value: firePctB)
             PricingInputRow(label: label3, unit: "₺/ton", value: elektrikB)
             PricingInputRow(label: label4, unit: "₺/ton", value: nakliyeB)
             PricingInputRow(label: label5, unit: "₺/ton", value: iscilikB)
+
+            // ── Dinamik ek gider kalemleri ─────────────────────────────
+            if !aktifGiderler.isEmpty {
+                Divider().padding(.vertical, 3)
+                ForEach(aktifGiderler) { item in
+                    HStack {
+                        Text(item.name)
+                            .font(.subheadline)
+                            .foregroundStyle(.purple)
+                            .frame(minWidth: 110, alignment: .leading)
+                        Spacer()
+                        Text(fmtGider(item.value))
+                            .font(.subheadline.monospacedDigit())
+                        Text(item.unitLabel)
+                            .font(.caption).foregroundStyle(.secondary)
+                            .frame(width: 36, alignment: .leading)
+                        Button {
+                            context.delete(item)
+                            try? context.save()
+                        } label: {
+                            Image(systemName: "minus.circle.fill")
+                                .foregroundStyle(.red)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+
+            // ── Yeni kalem ekle ────────────────────────────────────────
+            Button {
+                showAddGider = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "plus.circle.fill").foregroundStyle(.purple)
+                    Text("Gider Kalemi Ekle")
+                        .font(.subheadline).foregroundStyle(.purple)
+                }
+            }
+            .padding(.vertical, 6)
+
             Divider().padding(.vertical, 4)
             PricingInputRow(label: "Kar Marjı", unit: "%", value: karPctB, accent: .orange)
             Divider().padding(.vertical, 4)
@@ -200,6 +327,40 @@ struct MaliyetlendirmeView: View {
             }
             .padding(.vertical, 6)
         }
+    }
+
+    // MARK: - İlk açılışta varsayılan markalar
+
+    private func seedDefaultsIfNeeded() {
+        guard brandDefs.isEmpty else { return }
+        let defaults = [("Alapala", 0), ("Karadeniz", 1)]
+        for (name, idx) in defaults {
+            context.insert(BrandDefinition(name: name, orderIndex: idx))
+        }
+        try? context.save()
+    }
+
+    // MARK: - Ürün aktarımı
+
+    private func aktarUrun(
+        _ row: (formula: BlendFormula, meta: ProductPricingMeta?),
+        to targetBrand: String
+    ) {
+        if let meta = row.meta {
+            // Meta zaten var → sadece markasını değiştir
+            meta.brand = targetBrand
+        } else {
+            // Meta yok (varsayılan Alapala'da görünüyordu) → hedef marka için oluştur
+            let m = ProductPricingMeta(formulaCode: row.formula.code, brand: targetBrand)
+            context.insert(m)
+        }
+        try? context.save()
+    }
+
+    private func fmtGider(_ v: Double) -> String {
+        v.truncatingRemainder(dividingBy: 1) == 0
+            ? String(format: "%.0f", v)
+            : String(format: "%.2f", v)
     }
 }
 
@@ -300,19 +461,20 @@ private struct PricingInputRow: View {
 // MARK: - Ürün satırı
 
 private struct PricingProductRow: View {
-    let formula:  BlendFormula
-    let meta:     ProductPricingMeta?
-    let ipCuval:  Double
-    let firePct:  Double
-    let elektrik: Double
-    let nakliye:  Double
-    let iscilik:  Double
-    let karPct:   Double
-    let label1:   String
-    let label2:   String
-    let label3:   String
-    let label4:   String
-    let label5:   String
+    let formula:    BlendFormula
+    let meta:       ProductPricingMeta?
+    let ipCuval:    Double
+    let firePct:    Double
+    let elektrik:   Double
+    let nakliye:    Double
+    let iscilik:    Double
+    let karPct:     Double
+    let label1:     String
+    let label2:     String
+    let label3:     String
+    let label4:     String
+    let label5:     String
+    var extraItems: [(value: Double, isPercent: Bool)] = []
 
     private var rasyon: Double { formula.currentCostTL > 0 ? formula.currentCostTL : formula.recordedCostTL }
     private var bagKg:  Int    { meta?.bagKg ?? 50 }
@@ -322,7 +484,7 @@ private struct PricingProductRow: View {
         PricingCalc.calculate(
             rasyon: rasyon, ipCuval: ipCuval, firePct: firePct,
             elektrik: elektrik, nakliye: nakliye, iscilik: iscilik,
-            karPct: effKar, bagKg: bagKg
+            karPct: effKar, bagKg: bagKg, extraItems: extraItems
         )
     }
 
@@ -409,16 +571,21 @@ struct ProductPricingMetaSheet: View {
     @Environment(\.dismiss)      private var dismiss
     @Environment(\.modelContext) private var context
 
-    @State private var form:          String = "Pelet"
-    @State private var categoryGroup: String = ""
-    @State private var bagKg:         Int    = 50
-    @State private var isVisible:     Bool   = true
-    @State private var overrideKarStr: String = ""
-    @State private var orderIndex:    Int    = 0
-    @State private var logoName:      String = ""
-    @State private var brand:         String = "Alapala"
+    @State private var form:              String           = "Pelet"
+    @State private var categoryGroup:     String           = ""
+    @State private var bagKg:             Int              = 50
+    @State private var isVisible:         Bool             = true
+    @State private var overrideKarStr:    String           = ""
+    @State private var orderIndex:        Int              = 0
+    @State private var logoName:          String           = ""
+    @State private var brand:             String           = "Alapala"
+    @State private var proteinStr:        String           = ""   // boş = formül değeri
+    @State private var manualPesinStr:    String           = ""   // boş = hesaplanan
+    @State private var logoImagePath:     String           = ""
+    @State private var logoPickerItem:    PhotosPickerItem? = nil
+    @State private var isLoadingLogo:     Bool             = false
 
-    private let formOptions = ["Pelet-Granül", "Pelet", "Toz", "TANELİ", "Diğer"]
+    private let formOptions = ["Pelet-Granül", "Pelet", "Granül", "Toz", "TANELİ", "Diğer"]
 
     // PDF'deki kategoriler — iki marka için
     private let alapalaCategories = [

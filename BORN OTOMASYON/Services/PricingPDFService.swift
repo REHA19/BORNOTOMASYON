@@ -48,6 +48,21 @@ struct PricingPDFService {
         var gun90:    Double
     }
 
+    // ── Sabit kategori sırası (PDF'de bu sırayla çıkar) ──────────────────
+    private static let categoryOrder: [String] = [
+        "SIĞIR SÜT YEMLERİ( 50 kg)",
+        "SIĞIR BESİ YEMLERİ( 50 kg)",
+        "SIĞIR BESİ TOZ YEMLERİ( 50 kg)",
+        "KUZU TOKLU YEMLERİ( 50 kg)",
+        "BUZAĞI YEMLERİ( 40-50 kg)",
+        "ÖZEL YEMLER( 50 kg)",
+        "KANATLI YEMLERİ ( 50 KG)",
+    ]
+
+    private static func categoryRank(_ cat: String) -> Int {
+        categoryOrder.firstIndex(of: cat) ?? 999
+    }
+
     // ── Renkler ──────────────────────────────────────────────────────────
     private static let navyDark  = UIColor(red: 0.03, green: 0.10, blue: 0.30, alpha: 1)
     private static let navyMid   = UIColor(red: 0.06, green: 0.18, blue: 0.52, alpha: 1)
@@ -91,7 +106,8 @@ struct PricingPDFService {
         ipCuval:      Double, firePct: Double, elektrik: Double,
         nakliye:      Double, iscilik: Double, globalKarPct: Double,
         vade:         VadeConfig,
-        period:       String
+        period:       String,
+        extraItems:   [(value: Double, isPercent: Bool)] = []
     ) -> Data {
 
         let visible = rows.filter { $0.meta?.isVisible ?? true }
@@ -103,7 +119,7 @@ struct PricingPDFService {
                 let calc   = PricingCalc.calculate(
                     rasyon: rasyon, ipCuval: ipCuval, firePct: firePct,
                     elektrik: elektrik, nakliye: nakliye, iscilik: iscilik,
-                    karPct: effKar, bagKg: bagKg
+                    karPct: effKar, bagKg: bagKg, extraItems: extraItems
                 )
                 let protein = formula.lastSolve?.nutrientValues["crudeProtein"]
                     ?? formula.constraints.first { $0.nutrientKey == "crudeProtein" }?.currentValue
@@ -119,7 +135,9 @@ struct PricingPDFService {
                 )
             }
             .sorted {
-                if $0.category != $1.category { return $0.category < $1.category }
+                let lr = categoryRank($0.category)
+                let rr = categoryRank($1.category)
+                if lr != rr { return lr < rr }
                 return $0.orderIdx < $1.orderIdx
             }
 
@@ -452,21 +470,47 @@ struct PricingPDFService {
         fSz:  CGFloat,
         vade: VadeConfig
     ) -> CGFloat {
-        var curY   = y
+        var curY    = y
         var lastGrp = ""
         var rowIdx  = 0
+
+        // Kategori başına ürün sayısı ve sıra numarası (PDF sırasına göre)
+        var countByGroup: [String: Int] = [:]
+        for row in rows { countByGroup[row.category, default: 0] += 1 }
+        let usedGroups = categoryOrder.filter { countByGroup[$0] != nil }
+        let totalGroups = usedGroups.count
 
         for row in rows {
             let grp = row.category.trimmingCharacters(in: .whitespaces)
             if !grp.isEmpty && grp != lastGrp {
                 lastGrp = grp
+
+                // ── Kategori başlık satırı ──────────────────────────────
+                let hH = grpH + 2   // başlık biraz daha yüksek
                 groupClr.setFill()
-                UIRectFill(CGRect(x: ML, y: curY, width: C.total, height: grpH))
-                // Grup adı
+                UIRectFill(CGRect(x: ML, y: curY, width: C.total, height: hH))
+
+                // Sol: kategori adı (büyük harf)
+                let textW = C.total * 0.72
                 drawT(grp.uppercased(),
-                      CGRect(x: ML + 6, y: curY + (grpH - fSz - 1) / 2, width: C.total - 12, height: fSz + 2),
+                      CGRect(x: ML + 6, y: curY + (hH - fSz - 1) / 2,
+                             width: textW, height: fSz + 2),
                       sz: fSz, bold: true, clr: .white)
-                curY  += grpH
+
+                // Sağ: "15 ürün  •  2/7"
+                let count   = countByGroup[grp] ?? 0
+                let grpIdx  = (usedGroups.firstIndex(of: grp) ?? 0) + 1
+                let rightTxt = "\(count) ürün  •  \(grpIdx)/\(totalGroups)"
+                drawT(rightTxt,
+                      CGRect(x: ML + textW, y: curY + (hH - fSz - 1) / 2,
+                             width: C.total - textW - 4, height: fSz + 2),
+                      sz: fSz - 0.5, clr: UIColor.white.withAlphaComponent(0.82), align: .right)
+
+                // Alt çizgi (daha koyu gölge efekti)
+                UIColor(white: 0, alpha: 0.15).setFill()
+                UIRectFill(CGRect(x: ML, y: curY + hH - 1, width: C.total, height: 1))
+
+                curY  += hH
                 rowIdx = 0
             }
 

@@ -44,14 +44,16 @@ struct BornOtomasyonApp: App {
 
     // Local-only modeller (CloudKit sync yok)
     private static let localModels: [any PersistentModel.Type] = [
-        FormulaCostEntry.self, ProductPricingMeta.self, PriceListArchive.self
+        FormulaCostEntry.self, ProductPricingMeta.self, PriceListArchive.self,
+        GiderKalemi.self, BrandDefinition.self, KategoriTanim.self
     ]
 
     private static func makeContainer() -> ModelContainer {
         let fullSchema = Schema([
             FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
             FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self,
-            FormulaCostEntry.self, ProductPricingMeta.self, PriceListArchive.self
+            FormulaCostEntry.self, ProductPricingMeta.self, PriceListArchive.self,
+            GiderKalemi.self, BrandDefinition.self, KategoriTanim.self
         ])
 
         // 1. CloudKit + Local (tercih edilen)
@@ -79,6 +81,7 @@ struct BornOtomasyonApp: App {
                 for: FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
                     FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self,
                     FormulaCostEntry.self, ProductPricingMeta.self, PriceListArchive.self,
+                    GiderKalemi.self, BrandDefinition.self, KategoriTanim.self,
                 configurations: ModelConfiguration(cloudKitDatabase: .private(ckContainerID))
             )
             print("✅ BORN: CloudKit container aktif")
@@ -93,6 +96,7 @@ struct BornOtomasyonApp: App {
                 for: FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
                     FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self,
                     FormulaCostEntry.self, ProductPricingMeta.self, PriceListArchive.self,
+                    GiderKalemi.self, BrandDefinition.self, KategoriTanim.self,
                 configurations: ModelConfiguration(cloudKitDatabase: .none)
             )
             print("⚠️ BORN: Yerel store — sync YOK")
