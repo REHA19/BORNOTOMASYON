@@ -282,7 +282,9 @@ private struct MenuGridCell: View {
                     if longPressDidFire {
                         longPressDidFire = false
                     } else {
-                        navTag = item.tag   // lazy: destination only built now
+                        withAnimation(.easeInOut(duration: 0.22)) {
+                            navTag = item.tag   // lazy: destination only built now
+                        }
                     }
                 }
                 .onLongPressGesture(minimumDuration: 0.45) {

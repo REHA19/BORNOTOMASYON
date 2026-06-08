@@ -1274,13 +1274,41 @@ private struct IngredientEditorRow: View {
 
                 Spacer()
 
-                // Solved percentage
-                if solved, ing.mixPct > 0.001 {
-                    VStack(alignment: .trailing, spacing: 1) {
-                        Text(String(format: "%.2f%%", ing.mixPct))
-                            .font(.subheadline.bold()).foregroundColor(.accentColor)
-                        Text((ing.mixPct / 100 * totalKg).kgString)
-                            .font(.caption2).foregroundStyle(.secondary)
+                // Solved percentage + delta gösterimi
+                if solved {
+                    if ing.mixPct > 0.001 {
+                        // ── Şu an rasyonda ──────────────────────────────────
+                        VStack(alignment: .trailing, spacing: 1) {
+                            Text(String(format: "%.2f%%", ing.mixPct))
+                                .font(.subheadline.bold()).foregroundColor(.accentColor)
+                            Text((ing.mixPct / 100 * totalKg).kgString)
+                                .font(.caption2).foregroundStyle(.secondary)
+                            // Delta: önceki çözümle karşılaştır
+                            if ing.previousMixPct > 0.001 {
+                                let diff = ing.mixPct - ing.previousMixPct
+                                if abs(diff) > 0.01 {
+                                    HStack(spacing: 2) {
+                                        Image(systemName: diff > 0
+                                              ? "arrow.up.circle.fill"
+                                              : "arrow.down.circle.fill")
+                                            .font(.system(size: 9, weight: .bold))
+                                        Text(String(format: "%+.2f%%", diff))
+                                            .font(.system(size: 10, weight: .bold).monospacedDigit())
+                                    }
+                                    .foregroundStyle(diff > 0 ? .green : .red)
+                                }
+                            }
+                        }
+                    } else if ing.previousMixPct > 0.001 {
+                        // ── Rasyondan çıktı ─────────────────────────────────
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Image(systemName: "minus.circle.fill")
+                                .font(.caption).foregroundStyle(.red)
+                            Text(String(format: "−%.2f%%", ing.previousMixPct))
+                                .font(.system(size: 10, weight: .bold).monospacedDigit())
+                                .foregroundStyle(.red)
+                            Text("çıktı").font(.caption2).foregroundStyle(.secondary)
+                        }
                     }
                 }
 

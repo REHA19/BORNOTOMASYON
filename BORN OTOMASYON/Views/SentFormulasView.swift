@@ -1,70 +1,161 @@
 import SwiftUI
 import SwiftData
 
+// MARK: - Gruplama modelleri: Yıl → Ay → Gün → Saat → Kayıtlar
+
+struct SentHourGroup: Identifiable {
+    let id:      String        // "14:00"
+    let date:    Date          // anchor: yıl+ay+gün+saat
+    var records: [SendRecord]
+}
+
+struct SentDayGroup: Identifiable {
+    let id:      String        // "22 Mayıs 2026"
+    let date:    Date          // anchor: yıl+ay+gün
+    var hours:   [SentHourGroup]
+    var allRecords: [SendRecord] { hours.flatMap(\.records) }
+}
+
+struct SentMonthGroup: Identifiable {
+    let id:      String        // "Mayıs 2026"
+    let date:    Date          // anchor: yıl+ay
+    var days:    [SentDayGroup]
+    var allRecords: [SendRecord] { days.flatMap(\.allRecords) }
+}
+
+struct SentYearGroup: Identifiable {
+    let id:      String        // "2026"
+    let date:    Date          // anchor: yıl
+    var months:  [SentMonthGroup]
+    var allRecords: [SendRecord] { months.flatMap(\.allRecords) }
+}
+
+// MARK: - Paylaşılan yardımcılar
+
+private func yearKey(_ date: Date) -> String {
+    let fmt = DateFormatter()
+    fmt.locale     = Locale(identifier: "tr_TR")
+    fmt.dateFormat = "yyyy"
+    return fmt.string(from: date)
+}
+
+private func monthKey(_ date: Date) -> String {
+    let fmt = DateFormatter()
+    fmt.locale     = Locale(identifier: "tr_TR")
+    fmt.dateFormat = "MMMM yyyy"
+    return fmt.string(from: date).capitalized
+}
+
+private func dayKey(_ date: Date) -> String {
+    let fmt = DateFormatter()
+    fmt.locale     = Locale(identifier: "tr_TR")
+    fmt.dateFormat = "d MMMM yyyy"
+    return fmt.string(from: date)
+}
+
+private func hourKey(_ date: Date) -> String {
+    let fmt = DateFormatter()
+    fmt.locale     = Locale(identifier: "tr_TR")
+    fmt.dateFormat = "HH:00"
+    return fmt.string(from: date)
+}
+
+private func hourLabel(_ date: Date) -> String {
+    let fmt = DateFormatter()
+    fmt.locale     = Locale(identifier: "tr_TR")
+    fmt.dateFormat = "HH"
+    let h = fmt.string(from: date)
+    return "\(h):00 – \(h):59"
+}
+
+/// Başarı/hata rozetlerini gösteren paylaşılan yardımcı görünüm
+private struct SuccessBadges: View {
+    let records: [SendRecord]
+    var body: some View {
+        let success = records.filter(\.isSuccess).count
+        let fail    = records.count - success
+        HStack(spacing: 6) {
+            if success > 0 {
+                Label("\(success)", systemImage: "checkmark.circle.fill")
+                    .font(.caption.bold()).foregroundStyle(.green).labelStyle(.titleAndIcon)
+            }
+            if fail > 0 {
+                Label("\(fail)", systemImage: "xmark.circle.fill")
+                    .font(.caption.bold()).foregroundStyle(.red).labelStyle(.titleAndIcon)
+            }
+        }
+    }
+}
+
+// MARK: - Kök: Yıl Listesi
+
 struct SentFormulasView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \SendRecord.sentAt, order: .reverse) private var records: [SendRecord]
 
-    @State private var showClearConfirm = false
-    @State private var clearKey: String?
-    @State private var clearIsMonth = false
+    @State private var showDeleteConfirm = false
+    @State private var pendingDeleteYear: SentYearGroup?
 
-    // MARK: - Gruplama: Ay → Gün → Kayıtlar
+    // MARK: - 4 katlı gruplama
 
-    struct DayGroup: Identifiable {
-        let id:      String   // "22 Mayıs 2026"
-        let date:    Date
-        var records: [SendRecord]
-    }
-
-    struct MonthGroup: Identifiable {
-        let id:      String   // "Mayıs 2026"
-        let date:    Date
-        var days:    [DayGroup]
-        var allRecords: [SendRecord] { days.flatMap(\.records) }
-    }
-
-    private var grouped: [MonthGroup] {
+    private var grouped: [SentYearGroup] {
         let cal = Calendar.current
-        var monthDict: [String: (date: Date, dayDict: [String: (date: Date, recs: [SendRecord])])] = [:]
+
+        // Sözlük tipi: yearKey → (anchor, monthKey → (anchor, dayKey → (anchor, hourKey → (anchor, recs))))
+        typealias HourDict  = [String: (date: Date, recs: [SendRecord])]
+        typealias DayDict   = [String: (date: Date, hours: HourDict)]
+        typealias MonthDict = [String: (date: Date, days: DayDict)]
+        typealias YearDict  = [String: (date: Date, months: MonthDict)]
+
+        var yearDict: YearDict = [:]
 
         for rec in records {
-            let mKey    = monthKey(rec.sentAt)
-            let dKey    = dayKey(rec.sentAt)
+            let yKey = yearKey(rec.sentAt)
+            let mKey = monthKey(rec.sentAt)
+            let dKey = dayKey(rec.sentAt)
+            let hKey = hourKey(rec.sentAt)
+
+            let yAnchor = cal.date(from: cal.dateComponents([.year], from: rec.sentAt)) ?? rec.sentAt
             let mAnchor = cal.date(from: cal.dateComponents([.year, .month], from: rec.sentAt)) ?? rec.sentAt
             let dAnchor = cal.date(from: cal.dateComponents([.year, .month, .day], from: rec.sentAt)) ?? rec.sentAt
+            let hAnchor = cal.date(from: cal.dateComponents([.year, .month, .day, .hour], from: rec.sentAt)) ?? rec.sentAt
 
-            if monthDict[mKey] == nil {
-                monthDict[mKey] = (date: mAnchor, dayDict: [:])
+            if yearDict[yKey] == nil {
+                yearDict[yKey] = (date: yAnchor, months: [:])
             }
-            if monthDict[mKey]!.dayDict[dKey] == nil {
-                monthDict[mKey]!.dayDict[dKey] = (date: dAnchor, recs: [])
+            if yearDict[yKey]!.months[mKey] == nil {
+                yearDict[yKey]!.months[mKey] = (date: mAnchor, days: [:])
             }
-            monthDict[mKey]!.dayDict[dKey]!.recs.append(rec)
+            if yearDict[yKey]!.months[mKey]!.days[dKey] == nil {
+                yearDict[yKey]!.months[mKey]!.days[dKey] = (date: dAnchor, hours: [:])
+            }
+            if yearDict[yKey]!.months[mKey]!.days[dKey]!.hours[hKey] == nil {
+                yearDict[yKey]!.months[mKey]!.days[dKey]!.hours[hKey] = (date: hAnchor, recs: [])
+            }
+            yearDict[yKey]!.months[mKey]!.days[dKey]!.hours[hKey]!.recs.append(rec)
         }
 
-        return monthDict
-            .map { mKey, mVal -> MonthGroup in
-                let days = mVal.dayDict
-                    .map { dKey, dVal in DayGroup(id: dKey, date: dVal.date, records: dVal.recs) }
+        return yearDict
+            .map { yKey, yVal -> SentYearGroup in
+                let months: [SentMonthGroup] = yVal.months
+                    .map { mKey, mVal -> SentMonthGroup in
+                        let days: [SentDayGroup] = mVal.days
+                            .map { dKey, dVal -> SentDayGroup in
+                                let hours: [SentHourGroup] = dVal.hours
+                                    .map { hKey, hVal in
+                                        SentHourGroup(id: hKey, date: hVal.date,
+                                                  records: hVal.recs.sorted { $0.sentAt > $1.sentAt })
+                                    }
+                                    .sorted { $0.date > $1.date }
+                                return SentDayGroup(id: dKey, date: dVal.date, hours: hours)
+                            }
+                            .sorted { $0.date > $1.date }
+                        return SentMonthGroup(id: mKey, date: mVal.date, days: days)
+                    }
                     .sorted { $0.date > $1.date }
-                return MonthGroup(id: mKey, date: mVal.date, days: days)
+                return SentYearGroup(id: yKey, date: yVal.date, months: months)
             }
             .sorted { $0.date > $1.date }
-    }
-
-    private func monthKey(_ date: Date) -> String {
-        let fmt = DateFormatter()
-        fmt.locale     = Locale(identifier: "tr_TR")
-        fmt.dateFormat = "MMMM yyyy"
-        return fmt.string(from: date).capitalized
-    }
-
-    private func dayKey(_ date: Date) -> String {
-        let fmt = DateFormatter()
-        fmt.locale     = Locale(identifier: "tr_TR")
-        fmt.dateFormat = "d MMMM yyyy"
-        return fmt.string(from: date)
     }
 
     // MARK: - Body
@@ -73,9 +164,43 @@ struct SentFormulasView: View {
         NavigationStack {
             Group {
                 if records.isEmpty {
-                    emptyState
+                    ContentUnavailableView(
+                        "Gönderim Yok",
+                        systemImage: "paperplane",
+                        description: Text("SingleBlend veya MultiBlend'den rasyon gönderdikçe burada listelenir.")
+                    )
                 } else {
-                    recordList
+                    List {
+                        ForEach(grouped) { year in
+                            NavigationLink(destination: SentYearDetailView(year: year)) {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "calendar")
+                                        .font(.title3)
+                                        .foregroundStyle(.orange)
+                                        .frame(width: 30)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(year.id)
+                                            .font(.title3.bold())
+                                            .foregroundStyle(.primary)
+                                        Text("\(year.months.count) ay  •  \(year.allRecords.count) gönderim")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    SuccessBadges(records: year.allRecords)
+                                }
+                                .padding(.vertical, 4)
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button(role: .destructive) {
+                                    pendingDeleteYear = year
+                                    showDeleteConfirm = true
+                                } label: {
+                                    Label("Sil", systemImage: "trash")
+                                }
+                            }
+                        }
+                    }
+                    .listStyle(.insetGrouped)
                 }
             }
             .navigationTitle("Gönderilen Rasyonlar")
@@ -83,142 +208,231 @@ struct SentFormulasView: View {
             .toolbar {
                 if !records.isEmpty {
                     ToolbarItem(placement: .navigationBarLeading) {
-                        summaryBadge
+                        let total   = records.count
+                        let success = records.filter(\.isSuccess).count
+                        Label("\(success)/\(total)", systemImage: "paperplane.fill")
+                            .font(.caption.bold())
+                            .foregroundStyle(success == total ? .green : .orange)
                     }
                 }
             }
-            .alert("Sil", isPresented: $showClearConfirm) {
+            .alert("Yılı Sil", isPresented: $showDeleteConfirm) {
                 Button("Tümünü Sil", role: .destructive) {
-                    if let key = clearKey { deleteByKey(key, isMonth: clearIsMonth) }
+                    if let year = pendingDeleteYear {
+                        year.allRecords.forEach { modelContext.delete($0) }
+                        try? modelContext.save()
+                    }
+                    pendingDeleteYear = nil
                 }
-                Button("Vazgeç", role: .cancel) {}
+                Button("Vazgeç", role: .cancel) { pendingDeleteYear = nil }
             } message: {
-                Text("\(clearKey ?? "") tarihine ait tüm gönderim kayıtları silinecek.")
+                Text("\(pendingDeleteYear?.id ?? "") yılına ait tüm gönderim kayıtları silinecek.")
             }
         }
     }
+}
 
-    // MARK: - List
+// MARK: - Yıl Detayı: Ay Listesi
 
-    private var recordList: some View {
+private struct SentYearDetailView: View {
+    @Environment(\.modelContext) private var modelContext
+    let year: SentYearGroup
+
+    @State private var showDeleteConfirm = false
+    @State private var pendingDelete: SentMonthGroup?
+
+    var body: some View {
         List {
-            ForEach(grouped) { month in
-                Section {
-                    ForEach(month.days) { day in
-                        DisclosureGroup {
-                            ForEach(day.records) { rec in
-                                NavigationLink(destination: SentRecordDetailView(record: rec)) {
-                                    RecordRow(record: rec)
-                                }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    Button(role: .destructive) {
-                                        modelContext.delete(rec)
-                                        try? modelContext.save()
-                                    } label: {
-                                        Label("Sil", systemImage: "trash")
-                                    }
-                                }
-                            }
-                        } label: {
-                            dayLabel(day)
+            ForEach(year.months) { month in
+                NavigationLink(destination: SentMonthDetailView(month: month)) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "calendar.badge.clock")
+                            .font(.title3)
+                            .foregroundStyle(.indigo)
+                            .frame(width: 30)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(month.id)
+                                .font(.subheadline.bold())
+                                .foregroundStyle(.primary)
+                            Text("\(month.days.count) gün  •  \(month.allRecords.count) gönderim")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
+                        Spacer()
+                        SuccessBadges(records: month.allRecords)
                     }
-                } header: {
-                    monthHeader(month)
+                    .padding(.vertical, 4)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(role: .destructive) {
+                        pendingDelete = month
+                        showDeleteConfirm = true
+                    } label: {
+                        Label("Sil", systemImage: "trash")
+                    }
                 }
             }
         }
         .listStyle(.insetGrouped)
-    }
-
-    // MARK: - Gün etiketi
-
-    @ViewBuilder
-    private func dayLabel(_ day: DayGroup) -> some View {
-        let success = day.records.filter(\.isSuccess).count
-        let fail    = day.records.count - success
-        HStack(spacing: 8) {
-            Text(day.id)
-                .font(.subheadline.bold())
-                .foregroundStyle(.primary)
-            Spacer()
-            if success > 0 {
-                Label("\(success)", systemImage: "checkmark.circle.fill")
-                    .font(.caption.bold()).foregroundStyle(.green).labelStyle(.titleAndIcon)
+        .navigationTitle(year.id)
+        .navigationBarTitleDisplayMode(.inline)
+        .alert("Ayı Sil", isPresented: $showDeleteConfirm) {
+            Button("Tümünü Sil", role: .destructive) {
+                if let m = pendingDelete {
+                    m.allRecords.forEach { modelContext.delete($0) }
+                    try? modelContext.save()
+                }
+                pendingDelete = nil
             }
-            if fail > 0 {
-                Label("\(fail)", systemImage: "xmark.circle.fill")
-                    .font(.caption.bold()).foregroundStyle(.red).labelStyle(.titleAndIcon)
-            }
-            Button {
-                clearKey = day.id; clearIsMonth = false; showClearConfirm = true
-            } label: {
-                Image(systemName: "trash").font(.caption).foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
+            Button("Vazgeç", role: .cancel) { pendingDelete = nil }
+        } message: {
+            Text("\(pendingDelete?.id ?? "") ayına ait tüm gönderim kayıtları silinecek.")
         }
     }
+}
 
-    // MARK: - Ay başlığı
+// MARK: - Ay Detayı: Gün Listesi
 
-    @ViewBuilder
-    private func monthHeader(_ month: MonthGroup) -> some View {
-        let all     = month.allRecords
-        let success = all.filter(\.isSuccess).count
-        let fail    = all.count - success
-        HStack(spacing: 8) {
-            Text(month.id)
-                .font(.subheadline.bold())
-                .foregroundStyle(.primary)
-                .textCase(nil)
-            Spacer()
-            if success > 0 {
-                Label("\(success)", systemImage: "checkmark.circle.fill")
-                    .font(.caption.bold()).foregroundStyle(.green).labelStyle(.titleAndIcon)
+private struct SentMonthDetailView: View {
+    @Environment(\.modelContext) private var modelContext
+    let month: SentMonthGroup
+
+    @State private var showDeleteConfirm = false
+    @State private var pendingDelete: SentDayGroup?
+
+    var body: some View {
+        List {
+            ForEach(month.days) { day in
+                NavigationLink(destination: SentDayDetailView(day: day)) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "calendar.day.timeline.left")
+                            .font(.title3)
+                            .foregroundStyle(.teal)
+                            .frame(width: 30)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(day.id)
+                                .font(.subheadline.bold())
+                                .foregroundStyle(.primary)
+                            Text("\(day.hours.count) saat dilimi  •  \(day.allRecords.count) gönderim")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        SuccessBadges(records: day.allRecords)
+                    }
+                    .padding(.vertical, 4)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(role: .destructive) {
+                        pendingDelete = day
+                        showDeleteConfirm = true
+                    } label: {
+                        Label("Sil", systemImage: "trash")
+                    }
+                }
             }
-            if fail > 0 {
-                Label("\(fail)", systemImage: "xmark.circle.fill")
-                    .font(.caption.bold()).foregroundStyle(.red).labelStyle(.titleAndIcon)
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle(month.id)
+        .navigationBarTitleDisplayMode(.inline)
+        .alert("Günü Sil", isPresented: $showDeleteConfirm) {
+            Button("Tümünü Sil", role: .destructive) {
+                if let d = pendingDelete {
+                    d.allRecords.forEach { modelContext.delete($0) }
+                    try? modelContext.save()
+                }
+                pendingDelete = nil
             }
-            Button {
-                clearKey = month.id; clearIsMonth = true; showClearConfirm = true
-            } label: {
-                Image(systemName: "trash").font(.caption).foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
+            Button("Vazgeç", role: .cancel) { pendingDelete = nil }
+        } message: {
+            Text("\(pendingDelete?.id ?? "") gününe ait tüm gönderim kayıtları silinecek.")
         }
     }
+}
 
-    // MARK: - Özet badge
+// MARK: - Gün Detayı: Saat Listesi
 
-    private var summaryBadge: some View {
-        let total   = records.count
-        let success = records.filter(\.isSuccess).count
-        return HStack(spacing: 6) {
-            Label("\(success)/\(total)", systemImage: "paperplane.fill")
-                .font(.caption.bold())
-                .foregroundStyle(success == total ? .green : .orange)
+private struct SentDayDetailView: View {
+    @Environment(\.modelContext) private var modelContext
+    let day: SentDayGroup
+
+    @State private var showDeleteConfirm = false
+    @State private var pendingDelete: SentHourGroup?
+
+    var body: some View {
+        List {
+            ForEach(day.hours) { hour in
+                NavigationLink(destination: SentHourDetailView(hour: hour)) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "clock")
+                            .font(.title3)
+                            .foregroundStyle(.cyan)
+                            .frame(width: 30)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(hourLabel(hour.date))
+                                .font(.subheadline.bold())
+                                .foregroundStyle(.primary)
+                            Text("\(hour.records.count) gönderim")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        SuccessBadges(records: hour.records)
+                    }
+                    .padding(.vertical, 4)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(role: .destructive) {
+                        pendingDelete = hour
+                        showDeleteConfirm = true
+                    } label: {
+                        Label("Sil", systemImage: "trash")
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle(day.id)
+        .navigationBarTitleDisplayMode(.inline)
+        .alert("Saati Sil", isPresented: $showDeleteConfirm) {
+            Button("Tümünü Sil", role: .destructive) {
+                if let h = pendingDelete {
+                    h.records.forEach { modelContext.delete($0) }
+                    try? modelContext.save()
+                }
+                pendingDelete = nil
+            }
+            Button("Vazgeç", role: .cancel) { pendingDelete = nil }
+        } message: {
+            if let h = pendingDelete {
+                Text("\(day.id) — \(hourLabel(h.date)) arasındaki tüm gönderim kayıtları silinecek.")
+            }
         }
     }
+}
 
-    // MARK: - Empty state
+// MARK: - Saat Detayı: Kayıt Listesi
 
-    private var emptyState: some View {
-        ContentUnavailableView(
-            "Gönderim Yok",
-            systemImage: "paperplane",
-            description: Text("SingleBlend veya MultiBlend'den rasyon gönderdikçe burada listelenir.")
-        )
-    }
+private struct SentHourDetailView: View {
+    @Environment(\.modelContext) private var modelContext
+    let hour: SentHourGroup
 
-    // MARK: - Silme
-
-    private func deleteByKey(_ key: String, isMonth: Bool) {
-        let toDelete = isMonth
-            ? records.filter { monthKey($0.sentAt) == key }
-            : records.filter { dayKey($0.sentAt) == key }
-        toDelete.forEach { modelContext.delete($0) }
-        try? modelContext.save()
+    var body: some View {
+        List {
+            ForEach(hour.records) { rec in
+                NavigationLink(destination: SentRecordDetailView(record: rec)) {
+                    RecordRow(record: rec)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        modelContext.delete(rec)
+                        try? modelContext.save()
+                    } label: {
+                        Label("Sil", systemImage: "trash")
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle(hourLabel(hour.date))
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

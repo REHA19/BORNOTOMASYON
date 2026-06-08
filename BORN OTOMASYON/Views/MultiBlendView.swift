@@ -8,8 +8,10 @@ struct MultiBlendListView: View {
     @Environment(\.modelContext) private var context
     @Query(sort: \MultiBlendGroup.orderIndex) private var groups: [MultiBlendGroup]
 
-    @State private var showNewAlert = false
-    @State private var newName      = ""
+    @State private var showNewAlert    = false
+    @State private var newName         = ""
+    @State private var renamingGroup:  MultiBlendGroup? = nil
+    @State private var renameText      = ""
 
     var body: some View {
         NavigationStack {
@@ -38,6 +40,17 @@ struct MultiBlendListView: View {
                                 }
                             }
                             .buttonStyle(.plain)
+                            // Sola kaydır → Yeniden Adlandır
+                            .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                                Button {
+                                    renameText    = group.name
+                                    renamingGroup = group
+                                } label: {
+                                    Label("Yeniden Adlandır", systemImage: "pencil")
+                                }
+                                .tint(.blue)
+                            }
+                            // Sağa kaydır → Sil
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                 Button(role: .destructive) {
                                     context.delete(group)
@@ -58,6 +71,13 @@ struct MultiBlendListView: View {
             }
             .navigationTitle("MultiBlend")
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                var fixed = false
+                for g in groups {
+                    if g.deduplicateFormulaCodes() { fixed = true }
+                }
+                if fixed { try? context.save() }
+            }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button { showNewAlert = true } label: {
@@ -65,6 +85,7 @@ struct MultiBlendListView: View {
                     }
                 }
             }
+            // Yeni grup
             .alert("Yeni MultiBlend Grubu", isPresented: $showNewAlert) {
                 TextField("Grup Adı", text: $newName)
                 Button("Oluştur") {
@@ -77,6 +98,24 @@ struct MultiBlendListView: View {
                     newName = ""
                 }
                 Button("İptal", role: .cancel) { newName = "" }
+            }
+            // Yeniden adlandır
+            .alert("Grubu Yeniden Adlandır", isPresented: Binding(
+                get: { renamingGroup != nil },
+                set: { if !$0 { renamingGroup = nil } }
+            )) {
+                TextField("Grup Adı", text: $renameText)
+                Button("Kaydet") {
+                    let trimmed = renameText.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty, let g = renamingGroup {
+                        g.name = trimmed
+                        try? context.save()
+                    }
+                    renamingGroup = nil
+                }
+                Button("İptal", role: .cancel) { renamingGroup = nil }
+            } message: {
+                Text(renamingGroup.map { "\u{201C}\($0.name)\u{201D}" } ?? "")
             }
         }
     }
@@ -119,6 +158,10 @@ struct MultiBlendDetailView: View {
     }
     @State private var solverPulse       = false   // yanıp-sönme animasyonu
     @State private var selectedIngUsage: CombinedIng?         = nil
+    @State private var showRenameAlert   = false
+    @State private var renameText        = ""
+    /// Hesaplama öncesi her hammaddenin aylık ton değeri — delta gösterimi için
+    @State private var prevIngTons:      [String: Double]      = [:]
 
     struct SolveResult {
         let ok:      Bool
@@ -324,18 +367,15 @@ struct MultiBlendDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { }
         .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                HStack(spacing: 14) {
-                    EditButton()
-                    if hasUnavailableIngredients {
-                        Button { activateAllIngredients() } label: {
-                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                        }
-                    }
-                }
-            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
+                    // Grup adını değiştir
+                    Button {
+                        renameText      = group.name
+                        showRenameAlert = true
+                    } label: {
+                        Image(systemName: "pencil").foregroundStyle(.blue)
+                    }
                     Button { showSend = true } label: {
                         Image(systemName: "paperplane.fill").foregroundStyle(.orange)
                     }
@@ -346,6 +386,19 @@ struct MultiBlendDetailView: View {
                     .disabled(groupFormulas.isEmpty)
                 }
             }
+        }
+        .alert("Grubu Yeniden Adlandır", isPresented: $showRenameAlert) {
+            TextField("Grup Adı", text: $renameText)
+            Button("Kaydet") {
+                let trimmed = renameText.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty {
+                    group.name = trimmed
+                    try? context.save()
+                }
+            }
+            Button("İptal", role: .cancel) { }
+        } message: {
+            Text("\u{201C}\(group.name)\u{201D} için yeni bir isim girin.")
         }
         .sheet(item: $editContext) { ctx in
             FormulaEditorView(
@@ -395,10 +448,11 @@ struct MultiBlendDetailView: View {
                 autoMatchProduction(from: productionVM.summary?.entries ?? [])
             }
         }
-        .onAppear {
-            // Ekrana girildiğinde bir önceki ayın üretim cetvelini otomatik çek
+        .task {
+            // Navigasyon animasyonu bittikten SONRA ağ çağrısını başlat
+            try? await Task.sleep(for: .milliseconds(650))
             productionVM.selectedMonth = previousMonth
-            Task { await productionVM.load() }
+            await productionVM.load()
         }
         .onDisappear {
             try? context.save()
@@ -473,17 +527,20 @@ struct MultiBlendDetailView: View {
                         .font(.caption)
                 }
                 if productionVM.isLoading {
-                    ProgressView().scaleEffect(0.7)
+                    ProgressView().scaleEffect(0.75)
                 } else {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 8) {
+                        // Üretim cetveli ikonu — yazısız, sadece sembol
                         Button {
                             let month = pickedProductionMonth ?? previousMonth
                             productionVM.selectedMonth = month
                             Task { await productionVM.load() }
                         } label: {
-                            Label("Cetvelden Yükle", systemImage: "arrow.down.doc")
-                                .font(.caption)
+                            Image(systemName: "tablecells.fill")
+                                .font(.callout)
+                                .foregroundStyle(.blue)
                         }
+                        // Ay seçici takvim
                         Menu {
                             ForEach(availableProductionMonths, id: \.self) { month in
                                 Button {
@@ -502,13 +559,13 @@ struct MultiBlendDetailView: View {
                             }
                         } label: {
                             Image(systemName: "calendar")
-                                .font(.caption)
+                                .font(.callout)
                                 .foregroundStyle(pickedProductionMonth != nil ? .blue : .secondary)
                         }
                     }
                 }
                 Button { showAdder = true } label: {
-                    Image(systemName: "plus.circle").font(.caption)
+                    Image(systemName: "plus.circle").font(.callout)
                 }
             }
         } footer: {
@@ -760,6 +817,17 @@ struct MultiBlendDetailView: View {
                                 .font(.caption.bold())
                                 .foregroundStyle(hasViolation ? .red : .primary)
                         }
+                        // Delta: hesaplama sonrası değişim (yeşil artış / kırmızı azalış)
+                        if let prev = prevIngTons[item.code], abs(usage - prev) > 0.001 {
+                            let delta = usage - prev
+                            HStack(spacing: 2) {
+                                Image(systemName: delta > 0 ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
+                                    .font(.system(size: 9, weight: .bold))
+                                Text(String(format: "%+.2f ton", delta))
+                                    .font(.system(size: 10, weight: .bold).monospacedDigit())
+                            }
+                            .foregroundStyle(delta > 0 ? .green : .red)
+                        }
                         if let mx = limit?.maxTons {
                             Text(String(format: "max %.1f ton", mx))
                                 .font(.caption2).foregroundStyle(.secondary)
@@ -1006,6 +1074,10 @@ struct MultiBlendDetailView: View {
         isCalculating        = true
         currentlySolvingName = nil
         try? await Task.sleep(for: .milliseconds(60))
+
+        // Hesaplama öncesi ortak hammadde tonlarını kaydet (delta gösterimi için)
+        prevIngTons = Dictionary(uniqueKeysWithValues:
+            combinedIngredients.map { ($0.code, $0.monthlyTons) })
 
         for formula in groupFormulas { previousCosts[formula.code] = formula.currentCostTL }
         solveResults = [:]
@@ -1276,7 +1348,10 @@ private struct IngredientLimitFields: View {
         VStack(alignment: .leading, spacing: 4) {
             // MIN
             HStack(spacing: 3) {
-                Text("MIN").font(.caption2.bold()).foregroundStyle(.blue).frame(width: 28, alignment: .leading)
+                Text("MIN")
+                    .font(.caption2.bold()).foregroundStyle(.blue)
+                    .lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                    .frame(minWidth: 30, alignment: .leading)
                 TextField("—", text: $minText)
                     .keyboardType(.decimalPad)
                     .multilineTextAlignment(.trailing)
@@ -1294,7 +1369,10 @@ private struct IngredientLimitFields: View {
 
             // MAX
             HStack(spacing: 3) {
-                Text("MAX").font(.caption2.bold()).foregroundStyle(.orange).frame(width: 28, alignment: .leading)
+                Text("MAX")
+                    .font(.caption2.bold()).foregroundStyle(.orange)
+                    .lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                    .frame(minWidth: 30, alignment: .leading)
                 TextField("—", text: $maxText)
                     .keyboardType(.decimalPad)
                     .multilineTextAlignment(.trailing)

@@ -18,7 +18,7 @@ struct SendFormulaSheet: View {
     @State private var sendResult:    SendOutcome?
 
     private var activeIngredients: [BFIngredient] {
-        formula.ingredients.filter { $0.isActive && $0.mixPct > 0 }
+        formula.ingredients.filter { $0.isActive && $0.mixPct > 0.09 }
     }
 
     private var hasSolve: Bool { formula.lastSolve?.isFeasible == true }
@@ -405,7 +405,7 @@ struct MultiBlendSendSheet: View {
         }
         let snaps: [FormSnap] = selectedFormulas.map { f in
             let cName = (customNames[f.code] ?? f.name).trimmingCharacters(in: .whitespaces)
-            let active = f.ingredients.filter { $0.isActive && $0.mixPct > 0 }
+            let active = f.ingredients.filter { $0.isActive && $0.mixPct > 0.09 }
             return FormSnap(
                 code: f.code, name: f.name, totalKg: f.totalKg, customName: cName,
                 ings: active.map { (code: $0.code, name: $0.name, mixPct: $0.mixPct) }
@@ -479,7 +479,7 @@ struct MultiBlendSendSheet: View {
 
     private func saveRecord(formula: BlendFormula, customName: String,
                             customVersion: String, success: Bool, message: String) {
-        let active = formula.ingredients.filter { $0.isActive && $0.mixPct > 0 }
+        let active = formula.ingredients.filter { $0.isActive && $0.mixPct > 0.09 }
         let snaps  = active.map {
             SentIngredientSnap(code: $0.code, name: $0.name,
                                amountKg: $0.mixPct / 100.0 * formula.totalKg,

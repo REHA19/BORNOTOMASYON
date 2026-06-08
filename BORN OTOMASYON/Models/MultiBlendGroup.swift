@@ -41,9 +41,13 @@ final class MultiBlendGroup {
             guard let data = formulaCodesJSON.data(using: .utf8),
                   let arr  = try? JSONDecoder().decode([String].self, from: data)
             else { return [] }
-            // Mükerrer kodları kaldır (CloudKit sync veya başka yollarla biriken tekrarlar)
             var seen = Set<String>()
-            return arr.filter { seen.insert($0).inserted }
+            let unique = arr.filter { seen.insert($0).inserted }
+            // Mükerrer varsa kalıcı olarak düzelt — CloudKit yeniden kirletse bile her okumada temizlenir
+            if unique.count < arr.count {
+                formulaCodesJSON = (try? String(data: JSONEncoder().encode(unique), encoding: .utf8)) ?? "[]"
+            }
+            return unique
         }
         set {
             var seen = Set<String>()
@@ -147,5 +151,19 @@ final class MultiBlendGroup {
 
     func removeFormula(code: String) {
         formulaCodes = formulaCodes.filter { $0 != code }
+    }
+
+    /// `formulaCodesJSON` içindeki mükerrer kodları kalıcı olarak temizler.
+    /// Düzeltme yapıldıysa `true` döner — çağıran taraf `context.save()` yapmalıdır.
+    @discardableResult
+    func deduplicateFormulaCodes() -> Bool {
+        guard let data = formulaCodesJSON.data(using: .utf8),
+              let arr  = try? JSONDecoder().decode([String].self, from: data)
+        else { return false }
+        var seen = Set<String>()
+        let unique = arr.filter { seen.insert($0).inserted }
+        guard unique.count < arr.count else { return false }   // zaten temiz
+        formulaCodesJSON = (try? String(data: JSONEncoder().encode(unique), encoding: .utf8)) ?? "[]"
+        return true
     }
 }
