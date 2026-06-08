@@ -87,6 +87,7 @@ struct PricingPDFService {
 
     static func generate(
         rows:         [(formula: BlendFormula, meta: ProductPricingMeta?)],
+        brand:        String = "Alapala",
         ipCuval:      Double, firePct: Double, elektrik: Double,
         nakliye:      Double, iscilik: Double, globalKarPct: Double,
         vade:         VadeConfig,
@@ -122,7 +123,9 @@ struct PricingPDFService {
                 return $0.orderIdx < $1.orderIdx
             }
 
-        let hasAntet = UIImage(named: "AlapalaYemAntet") != nil
+        // Marka başına antet görseli: "AlapalaYemAntet" veya "KaradenizYemAntet"
+        let antetName = brand == "Karadeniz" ? "KaradenizYemAntet" : "AlapalaYemAntet"
+        let hasAntet  = UIImage(named: antetName) != nil
 
         let uniqueGroups = Set(visible.map { $0.category }).filter { !$0.isEmpty }.count
         let totalLines   = visible.count + uniqueGroups
@@ -142,7 +145,7 @@ struct PricingPDFService {
             ctx.beginPage()
             var curY: CGFloat = 0
 
-            if let antet = UIImage(named: "AlapalaYemAntet") {
+            if let antet = UIImage(named: antetName) {
                 // ── Antet görseli tam sayfa arka plan ──────────────────
                 antet.draw(in: CGRect(x: 0, y: 0, width: PW, height: PH))
                 curY = antetContentY

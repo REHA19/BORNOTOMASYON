@@ -1,35 +1,40 @@
 import SwiftUI
+import SwiftData
 
 // MARK: - Yem Bayi Fiyat Listesi Ekranı
 
 struct FiyatListesiView: View {
-    let rows:           [(formula: BlendFormula, meta: ProductPricingMeta?)]
-    let ipCuval:        Double
-    let firePct:        Double
-    let elektrik:       Double
-    let nakliye:        Double
-    let iscilik:        Double
-    let globalKarPct:   Double
+    let rows:         [(formula: BlendFormula, meta: ProductPricingMeta?)]
+    let brand:        String
+    let ipCuval:      Double
+    let firePct:      Double
+    let elektrik:     Double
+    let nakliye:      Double
+    let iscilik:      Double
+    let globalKarPct: Double
+    let label1:       String
+    let label2:       String
+    let label3:       String
+    let label4:       String
+    let label5:       String
 
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dismiss)      private var dismiss
+    @Environment(\.modelContext) private var context
 
-    // Vade farkları (AppStorage — kalıcı)
     @AppStorage("pricing_vade_tek_cekim") private var vadeTekCekim: Double = 2.8
     @AppStorage("pricing_vade_30gun")     private var vade30:       Double = 4.5
     @AppStorage("pricing_vade_60gun")     private var vade60:       Double = 9.2
     @AppStorage("pricing_vade_90gun")     private var vade90:       Double = 14.1
     @AppStorage("pricing_list_period")    private var period:        String = ""
 
-    @State private var isGenerating = false
-    @State private var shareURL:     URL?   = nil
-    @State private var showShare     = false
+    @State private var isGenerating        = false
+    @State private var shareURL:           URL?  = nil
+    @State private var showShare                 = false
+    @State private var pendingArchiveFile: String? = nil
 
     private var vadeConfig: PricingPDFService.VadeConfig {
         PricingPDFService.VadeConfig(
-            tekCekim: vadeTekCekim,
-            gun30:    vade30,
-            gun60:    vade60,
-            gun90:    vade90
+            tekCekim: vadeTekCekim, gun30: vade30, gun60: vade60, gun90: vade90
         )
     }
 
@@ -40,19 +45,20 @@ struct FiyatListesiView: View {
     var body: some View {
         NavigationStack {
             Form {
-                // Dönem
                 Section("Liste Bilgisi") {
+                    LabeledContent("Marka") {
+                        Text(brand).bold().foregroundStyle(.orange)
+                    }
                     HStack {
                         Text("Dönem / Tarih")
                         Spacer()
-                        TextField("örn: 2026-06", text: $period)
+                        TextField("örn: Haziran 2026", text: $period)
                             .multilineTextAlignment(.trailing)
                             .font(.subheadline)
                     }
                     LabeledContent("Listede Ürün Sayısı", value: "\(visibleCount) ürün")
                 }
 
-                // Vade farkları
                 Section {
                     VadeRow(label: "Tek Çekim Kredi Kartı", value: $vadeTekCekim)
                     VadeRow(label: "30 Gün Vadeli",          value: $vade30)
@@ -65,9 +71,8 @@ struct FiyatListesiView: View {
                         .font(.caption2)
                 }
 
-                // Örnek hesap
                 Section("Örnek Hesap (ilk ürün)") {
-                    if let first = rows.first(where: { ($0.meta?.isVisible ?? true) }) {
+                    if let first = rows.first(where: { $0.meta?.isVisible ?? true }) {
                         let rasyon = first.formula.currentCostTL > 0 ? first.formula.currentCostTL : first.formula.recordedCostTL
                         let effKar = (first.meta?.overrideKarPct ?? -1) >= 0 ? first.meta!.overrideKarPct : globalKarPct
                         let bagKg  = first.meta?.bagKg ?? 50
@@ -76,21 +81,19 @@ struct FiyatListesiView: View {
                             elektrik: elektrik, nakliye: nakliye, iscilik: iscilik,
                             karPct: effKar, bagKg: bagKg
                         )
-                        let pesin = calc.pesin
                         Group {
                             LabeledContent(first.formula.name) { EmptyView() }
                                 .font(.caption2).foregroundStyle(.secondary)
-                            LabeledContent("Peşin")        { Text(fmt(pesin) + " ₺").bold().foregroundStyle(.orange) }
-                            LabeledContent("Tek Çekim")    { Text(fmt(calc.vadePrice(pct: vadeTekCekim)) + " ₺") }
-                            LabeledContent("30 Gün")       { Text(fmt(calc.vadePrice(pct: vade30)) + " ₺") }
-                            LabeledContent("60 Gün")       { Text(fmt(calc.vadePrice(pct: vade60)) + " ₺") }
-                            LabeledContent("90 Gün")       { Text(fmt(calc.vadePrice(pct: vade90)) + " ₺") }
+                            LabeledContent("Peşin")     { Text(fmt(calc.pesin) + " ₺").bold().foregroundStyle(.orange) }
+                            LabeledContent("Tek Çekim") { Text(fmt(calc.vadePrice(pct: vadeTekCekim)) + " ₺") }
+                            LabeledContent("30 Gün")    { Text(fmt(calc.vadePrice(pct: vade30)) + " ₺") }
+                            LabeledContent("60 Gün")    { Text(fmt(calc.vadePrice(pct: vade60)) + " ₺") }
+                            LabeledContent("90 Gün")    { Text(fmt(calc.vadePrice(pct: vade90)) + " ₺") }
                         }
                         .font(.subheadline)
                     }
                 }
 
-                // PDF çıktı butonu
                 Section {
                     Button {
                         generateAndShare()
@@ -100,17 +103,15 @@ struct FiyatListesiView: View {
                                 ProgressView().scaleEffect(0.8)
                                 Text("Oluşturuluyor…")
                             } else {
-                                Image(systemName: "doc.richtext.fill")
-                                    .foregroundStyle(.orange)
-                                Text("PDF Oluştur ve Paylaş")
-                                    .fontWeight(.semibold)
+                                Image(systemName: "doc.richtext.fill").foregroundStyle(.orange)
+                                Text("PDF Oluştur ve Paylaş").fontWeight(.semibold)
                             }
                         }
                     }
                     .disabled(isGenerating || visibleCount == 0)
                 }
             }
-            .navigationTitle("Fiyat Listesi")
+            .navigationTitle("\(brand) Fiyat Listesi")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -118,45 +119,63 @@ struct FiyatListesiView: View {
                 }
             }
             .sheet(isPresented: $showShare) {
-                if let url = shareURL {
-                    ActivityView(url: url)
-                }
+                if let url = shareURL { ShareSheet(url: url) }
+            }
+            .onChange(of: pendingArchiveFile) { _, filename in
+                guard let filename else { return }
+                let archive = PriceListArchive(brand: brand, period: period, fileName: filename)
+                context.insert(archive)
+                try? context.save()
+                pendingArchiveFile = nil
             }
         }
     }
 
-    // MARK: - PDF üret ve paylaş
+    // MARK: - PDF üret + arşivle + paylaş
 
     private func generateAndShare() {
         isGenerating = true
+        let capturedRows   = rows
+        let capturedBrand  = brand
+        let capturedPeriod = period
+        let config         = vadeConfig
+        let vals           = (ipCuval, firePct, elektrik, nakliye, iscilik, globalKarPct)
+
         Task.detached(priority: .userInitiated) {
             let data = PricingPDFService.generate(
-                rows: rows,
-                ipCuval: ipCuval, firePct: firePct,
-                elektrik: elektrik, nakliye: nakliye,
-                iscilik: iscilik, globalKarPct: globalKarPct,
-                vade: vadeConfig,
-                period: period
+                rows: capturedRows, brand: capturedBrand,
+                ipCuval: vals.0, firePct: vals.1,
+                elektrik: vals.2, nakliye: vals.3,
+                iscilik: vals.4, globalKarPct: vals.5,
+                vade: config, period: capturedPeriod
             )
-            let periodStr = period.isEmpty ? "" : "_\(period)"
-            let url = PricingPDFService.writeToTemp(
-                data: data,
-                filename: "FiyatListesi\(periodStr)"
-            )
+
+            // Arşiv dosyası: Documents/FiyatListesi_Alapala_2026-06-08_1430.pdf
+            let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd_HHmm"
+            let dateStr  = df.string(from: Date())
+            let filename = "FiyatListesi_\(capturedBrand)_\(dateStr).pdf"
+            if let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                try? data.write(to: docsDir.appendingPathComponent(filename))
+            }
+
+            // Paylaşım için geçici URL
+            let periodStr = capturedPeriod.isEmpty ? "" : "_\(capturedPeriod)"
+            let tempURL   = PricingPDFService.writeToTemp(data: data,
+                                                          filename: "FiyatListesi\(periodStr)")
             await MainActor.run {
-                isGenerating = false
-                shareURL     = url
-                showShare    = url != nil
+                isGenerating       = false
+                shareURL           = tempURL
+                showShare          = tempURL != nil
+                pendingArchiveFile = filename
             }
         }
     }
 
     private func fmt(_ v: Double) -> String {
         let n = NumberFormatter()
-        n.locale               = Locale(identifier: "tr_TR")
-        n.numberStyle          = .decimal
-        n.minimumFractionDigits = 2
-        n.maximumFractionDigits = 2
+        n.locale = Locale(identifier: "tr_TR")
+        n.numberStyle = .decimal
+        n.minimumFractionDigits = 2; n.maximumFractionDigits = 2
         return n.string(from: NSNumber(value: v)) ?? String(format: "%.2f", v)
     }
 }
@@ -166,7 +185,6 @@ struct FiyatListesiView: View {
 private struct VadeRow: View {
     let label:    String
     @Binding var value: Double
-
     @State private var text: String = ""
     @FocusState private var focused: Bool
 
@@ -189,19 +207,16 @@ private struct VadeRow: View {
 
     private func commit() {
         let clean = text.replacingOccurrences(of: ",", with: ".")
-        if let v = Double(clean) { value = v }
-        else { text = String(format: "%.1f", value) }
+        if let v = Double(clean) { value = v } else { text = String(format: "%.1f", value) }
     }
 }
 
 // MARK: - UIActivityViewController köprüsü
 
-private struct ActivityView: UIViewControllerRepresentable {
+struct ShareSheet: UIViewControllerRepresentable {
     let url: URL
-
     func makeUIViewController(context: Context) -> UIActivityViewController {
         UIActivityViewController(activityItems: [url], applicationActivities: nil)
     }
-
     func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }

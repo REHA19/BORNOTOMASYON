@@ -12,7 +12,7 @@ import Foundation
     var isVisible:      Bool    = true   // fiyat listesinde göster
     var overrideKarPct: Double  = -1.0   // -1 → global KAR% kullanılır, ≥0 → ürüne özel
     var logoName:       String  = ""     // Asset catalog logo adı (boş = logo yok)
-                                 // Örnekler: "LogoClassFeed", "LogoSpeedCalf", "LogoCalfmix"
+    var brand:          String  = "Alapala"  // "Alapala" veya "Karadeniz"
 
     init(formulaCode: String,
          form: String = "Pelet",
@@ -21,7 +21,8 @@ import Foundation
          orderIndex: Int = 0,
          isVisible: Bool = true,
          overrideKarPct: Double = -1,
-         logoName: String = "") {
+         logoName: String = "",
+         brand: String = "Alapala") {
         self.formulaCode    = formulaCode
         self.form           = form
         self.categoryGroup  = categoryGroup
@@ -30,6 +31,7 @@ import Foundation
         self.isVisible      = isVisible
         self.overrideKarPct = overrideKarPct
         self.logoName       = logoName
+        self.brand          = brand
     }
 }
 

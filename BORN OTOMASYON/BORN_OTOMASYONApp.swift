@@ -42,16 +42,16 @@ struct BornOtomasyonApp: App {
         FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self
     ]
 
-    // Local-only modeller (FormulaCostEntry + ProductPricingMeta CloudKit sync yok)
+    // Local-only modeller (CloudKit sync yok)
     private static let localModels: [any PersistentModel.Type] = [
-        FormulaCostEntry.self, ProductPricingMeta.self
+        FormulaCostEntry.self, ProductPricingMeta.self, PriceListArchive.self
     ]
 
     private static func makeContainer() -> ModelContainer {
         let fullSchema = Schema([
             FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
             FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self,
-            FormulaCostEntry.self, ProductPricingMeta.self
+            FormulaCostEntry.self, ProductPricingMeta.self, PriceListArchive.self
         ])
 
         // 1. CloudKit + Local (tercih edilen)
@@ -78,7 +78,7 @@ struct BornOtomasyonApp: App {
             let c = try ModelContainer(
                 for: FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
                     FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self,
-                    FormulaCostEntry.self, ProductPricingMeta.self,
+                    FormulaCostEntry.self, ProductPricingMeta.self, PriceListArchive.self,
                 configurations: ModelConfiguration(cloudKitDatabase: .private(ckContainerID))
             )
             print("✅ BORN: CloudKit container aktif")
@@ -92,7 +92,7 @@ struct BornOtomasyonApp: App {
             let c = try ModelContainer(
                 for: FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
                     FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self,
-                    FormulaCostEntry.self, ProductPricingMeta.self,
+                    FormulaCostEntry.self, ProductPricingMeta.self, PriceListArchive.self,
                 configurations: ModelConfiguration(cloudKitDatabase: .none)
             )
             print("⚠️ BORN: Yerel store — sync YOK")
