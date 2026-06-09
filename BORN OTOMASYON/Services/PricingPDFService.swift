@@ -103,12 +103,25 @@ struct PricingPDFService {
     static func generate(
         rows:         [(formula: BlendFormula, meta: ProductPricingMeta?)],
         brand:        String = "Alapala",
+        antetImage:   UIImage? = nil,
+        kategoriInfo: [(name: String, color: UIColor, order: Int)]? = nil,
         ipCuval:      Double, firePct: Double, elektrik: Double,
         nakliye:      Double, iscilik: Double, globalKarPct: Double,
         vade:         VadeConfig,
         period:       String,
         extraItems:   [(value: Double, isPercent: Bool)] = []
     ) -> Data {
+
+        // Dinamik kategori sırası ve renkleri
+        let effectiveCategoryOrder: [String]
+        let categoryColors: [String: UIColor]
+        if let info = kategoriInfo, !info.isEmpty {
+            effectiveCategoryOrder = info.sorted { $0.order < $1.order }.map { $0.name }
+            categoryColors = info.reduce(into: [:]) { $0[$1.name] = $1.color }
+        } else {
+            effectiveCategoryOrder = categoryOrder
+            categoryColors = [:]
+        }
 
         let visible = rows.filter { $0.meta?.isVisible ?? true }
             .compactMap { formula, meta -> RowData? in
@@ -121,29 +134,39 @@ struct PricingPDFService {
                     elektrik: elektrik, nakliye: nakliye, iscilik: iscilik,
                     karPct: effKar, bagKg: bagKg, extraItems: extraItems
                 )
-                let protein = formula.lastSolve?.nutrientValues["crudeProtein"]
+                let baseProtein = formula.lastSolve?.nutrientValues["crudeProtein"]
                     ?? formula.constraints.first { $0.nutrientKey == "crudeProtein" }?.currentValue
+                let protOvr = meta?.proteinOverride ?? -1
+                let effectiveProtein: Double? = protOvr >= 0 ? protOvr : baseProtein
                 return RowData(
-                    kod:      formula.code,
-                    name:     formula.name,
-                    form:     meta?.form ?? "Pelet",
-                    protein:  protein,
-                    logoName: meta?.logoName ?? "",
-                    category: meta?.categoryGroup ?? "",
-                    orderIdx: meta?.orderIndex ?? 999,
-                    calc:     calc
+                    kod:           formula.code,
+                    name:          formula.name,
+                    form:          meta?.form ?? "Pelet",
+                    protein:       effectiveProtein,
+                    logoName:      meta?.logoName ?? "",
+                    logoImagePath: meta?.logoImagePath ?? "",
+                    category:      meta?.categoryGroup ?? "",
+                    orderIdx:      meta?.orderIndex ?? 999,
+                    calc:          calc,
+                    manualPesin:   meta?.manualPesin ?? -1
                 )
             }
             .sorted {
-                let lr = categoryRank($0.category)
-                let rr = categoryRank($1.category)
-                if lr != rr { return lr < rr }
+                let li = effectiveCategoryOrder.firstIndex(of: $0.category) ?? 999
+                let ri = effectiveCategoryOrder.firstIndex(of: $1.category) ?? 999
+                if li != ri { return li < ri }
                 return $0.orderIdx < $1.orderIdx
             }
 
-        // Marka başına antet görseli: "AlapalaYemAntet" veya "KaradenizYemAntet"
-        let antetName = brand == "Karadeniz" ? "KaradenizYemAntet" : "AlapalaYemAntet"
-        let hasAntet  = UIImage(named: antetName) != nil
+        // Antet görseli: parametre > asset catalog
+        let resolvedAntet: UIImage?
+        if let img = antetImage {
+            resolvedAntet = img
+        } else {
+            let assetName = brand == "Karadeniz" ? "KaradenizYemAntet" : "AlapalaYemAntet"
+            resolvedAntet = UIImage(named: assetName)
+        }
+        let hasAntet = resolvedAntet != nil
 
         let uniqueGroups = Set(visible.map { $0.category }).filter { !$0.isEmpty }.count
         let totalLines   = visible.count + uniqueGroups
@@ -163,7 +186,7 @@ struct PricingPDFService {
             ctx.beginPage()
             var curY: CGFloat = 0
 
-            if let antet = UIImage(named: antetName) {
+            if let antet = resolvedAntet {
                 // ── Antet görseli tam sayfa arka plan ──────────────────
                 antet.draw(in: CGRect(x: 0, y: 0, width: PW, height: PH))
                 curY = antetContentY
@@ -178,7 +201,8 @@ struct PricingPDFService {
                 curY = drawTableHeader(y: curY, height: 22)
             }
 
-            curY = drawProducts(y: curY, rows: visible, rowH: rowH, grpH: grpH, fSz: fSz, vade: vade)
+            curY = drawProducts(y: curY, rows: visible, rowH: rowH, grpH: grpH, fSz: fSz,
+                                vade: vade, catColors: categoryColors)
             drawFooter(y: curY, fSz: fSz, hasAntet: hasAntet)
         }
     }
@@ -392,7 +416,7 @@ struct PricingPDFService {
               CGRect(x: rightX, y: curY + 19, width: rightW, height: 8),
               sz: 6.5, clr: UIColor(white: 0.28, alpha: 1))
 
-        curY += 34
+        curY += 22
 
         // Sol: Büyük başlık "YEM BAYİ FİYAT LİSTESİ"
         drawT("YEM BAYİ FİYAT LİSTESİ",
@@ -463,12 +487,13 @@ struct PricingPDFService {
     // ────────────────────────────────────────────────────────────────────
 
     private static func drawProducts(
-        y:    CGFloat,
-        rows: [RowData],
-        rowH: CGFloat,
-        grpH: CGFloat,
-        fSz:  CGFloat,
-        vade: VadeConfig
+        y:         CGFloat,
+        rows:      [RowData],
+        rowH:      CGFloat,
+        grpH:      CGFloat,
+        fSz:       CGFloat,
+        vade:      VadeConfig,
+        catColors: [String: UIColor] = [:]
     ) -> CGFloat {
         var curY    = y
         var lastGrp = ""
@@ -486,8 +511,9 @@ struct PricingPDFService {
                 lastGrp = grp
 
                 // ── Kategori başlık satırı ──────────────────────────────
-                let hH = grpH + 2   // başlık biraz daha yüksek
-                groupClr.setFill()
+                let hH = grpH + 2
+                let hdrColor = catColors[grp] ?? groupClr
+                hdrColor.setFill()
                 UIRectFill(CGRect(x: ML, y: curY, width: C.total, height: hH))
 
                 // Sol: kategori adı (büyük harf)
@@ -518,11 +544,13 @@ struct PricingPDFService {
             bg.setFill()
             UIRectFill(CGRect(x: ML, y: curY, width: C.total, height: rowH))
 
-            let pesin    = row.calc.pesin
-            let tekCekim = row.calc.vadePrice(pct: vade.tekCekim)
-            let gun30    = row.calc.vadePrice(pct: vade.gun30)
-            let gun60    = row.calc.vadePrice(pct: vade.gun60)
-            let gun90    = row.calc.vadePrice(pct: vade.gun90)
+            // Manuel fiyat varsa o baz alınır, yoksa hesaplanan
+            let pesinBase = row.manualPesin >= 0 ? row.manualPesin : row.calc.pesin
+            let pesin    = pesinBase
+            let tekCekim = pesinBase * (1 + vade.tekCekim / 100)
+            let gun30    = pesinBase * (1 + vade.gun30    / 100)
+            let gun60    = pesinBase * (1 + vade.gun60    / 100)
+            let gun90    = pesinBase * (1 + vade.gun90    / 100)
 
             let vP = max(1.0, (rowH - fSz) / 2 - 0.5)
             let tY = curY + vP
@@ -541,11 +569,19 @@ struct PricingPDFService {
                   sz: fSz, bold: true)
             x += C.urun
 
-            // Logo
-            if !row.logoName.isEmpty, let img = UIImage(named: row.logoName) {
-                let lH = rowH - 2.5
-                let lW = lH * img.size.width / img.size.height
-                img.draw(in: CGRect(x: x + (C.logo - lW) / 2, y: curY + 1.25, width: lW, height: lH))
+            // Logo — nizami kutu içinde, ölçekli ve ortalı
+            if let img = loadLogoImage(name: row.logoName, path: row.logoImagePath) {
+                let pad:  CGFloat = 1.5
+                let bx   = x + pad;         let by = curY + pad
+                let bw   = C.logo - pad*2;  let bh = rowH  - pad*2
+                UIColor.white.setFill(); UIRectFill(CGRect(x: bx, y: by, width: bw, height: bh))
+                UIColor(white: 0.70, alpha: 0.8).setStroke()
+                let bp = UIBezierPath(rect: CGRect(x: bx, y: by, width: bw, height: bh))
+                bp.lineWidth = 0.4; bp.stroke()
+                let ratio = img.size.width / img.size.height
+                var dw = bw - 2; var dh = dw / ratio
+                if dh > bh - 2 { dh = bh - 2; dw = dh * ratio }
+                img.draw(in: CGRect(x: bx + (bw - dw)/2, y: by + (bh - dh)/2, width: dw, height: dh))
             }
             x += C.logo
 
@@ -739,13 +775,25 @@ struct PricingPDFService {
     // ────────────────────────────────────────────────────────────────────
 
     private struct RowData {
-        let kod:      String
-        let name:     String
-        let form:     String
-        let protein:  Double?
-        let logoName: String
-        let category: String
-        let orderIdx: Int
-        let calc:     PricingCalc
+        let kod:           String
+        let name:          String
+        let form:          String
+        let protein:       Double?
+        let logoName:      String
+        let logoImagePath: String
+        let category:      String
+        let orderIdx:      Int
+        let calc:          PricingCalc
+        let manualPesin:   Double   // -1 = hesaplanan
+    }
+
+    private static func loadLogoImage(name: String, path: String) -> UIImage? {
+        if !path.isEmpty,
+           let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let url = docs.appendingPathComponent(path)
+            if let img = UIImage(contentsOfFile: url.path) { return img }
+        }
+        if !name.isEmpty { return UIImage(named: name) }
+        return nil
     }
 }

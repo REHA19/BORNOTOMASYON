@@ -18,6 +18,8 @@ struct FiyatListesiView: View {
     let label4:       String
     let label5:       String
     var extraItems:   [(value: Double, isPercent: Bool)] = []
+    var antetImage:   UIImage?                          = nil
+    var kategoriler:  [KategoriTanim]                   = []
 
     @Environment(\.dismiss)      private var dismiss
     @Environment(\.modelContext) private var context
@@ -136,20 +138,27 @@ struct FiyatListesiView: View {
 
     private func generateAndShare() {
         isGenerating = true
+
+        // Tüm SwiftData model verileri ve view property'leri main thread'de yakala
         let capturedRows   = rows
         let capturedBrand  = brand
         let capturedPeriod = period
         let config         = vadeConfig
         let vals           = (ipCuval, firePct, elektrik, nakliye, iscilik, globalKarPct)
+        let capturedExtra  = extraItems
+        let capturedAntet  = antetImage
+        let katInfo        = kategoriler.map { (name: $0.name, color: $0.uiColor, order: $0.orderIndex) }
 
         Task.detached(priority: .userInitiated) {
             let data = PricingPDFService.generate(
                 rows: capturedRows, brand: capturedBrand,
+                antetImage: capturedAntet,
+                kategoriInfo: katInfo.isEmpty ? nil : katInfo,
                 ipCuval: vals.0, firePct: vals.1,
                 elektrik: vals.2, nakliye: vals.3,
                 iscilik: vals.4, globalKarPct: vals.5,
                 vade: config, period: capturedPeriod,
-                extraItems: extraItems
+                extraItems: capturedExtra
             )
 
             // Arşiv dosyası: Documents/FiyatListesi_Alapala_2026-06-08_1430.pdf

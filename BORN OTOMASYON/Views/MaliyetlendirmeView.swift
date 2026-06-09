@@ -1,6 +1,5 @@
 import SwiftUI
 import SwiftData
-import PhotosUI
 
 // MARK: - Ana Maliyetlendirme Ekranı
 
@@ -480,6 +479,9 @@ private struct PricingProductRow: View {
     private var bagKg:  Int    { meta?.bagKg ?? 50 }
     private var effKar: Double { (meta?.overrideKarPct ?? -1) >= 0 ? (meta!.overrideKarPct) : karPct }
 
+    // Ürünün logosu — galeriden yüklenen öncelikli, yoksa asset catalog
+    private var logoImage: UIImage? { meta?.logoImage }
+
     private var calc: PricingCalc {
         PricingCalc.calculate(
             rasyon: rasyon, ipCuval: ipCuval, firePct: firePct,
@@ -516,6 +518,22 @@ private struct PricingProductRow: View {
                     }
                 }
                 Spacer()
+
+                // Logo küçük önizleme
+                if let img = logoImage {
+                    Image(uiImage: img)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 48, height: 28)
+                        .padding(3)
+                        .background(Color.secondary.opacity(0.08),
+                                    in: RoundedRectangle(cornerRadius: 5))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .stroke(Color.secondary.opacity(0.25), lineWidth: 0.5)
+                        )
+                }
+
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(fmt(calc.pesin) + " ₺")
                         .font(.title3.bold()).foregroundStyle(.orange)
@@ -581,31 +599,32 @@ struct ProductPricingMetaSheet: View {
     @State private var brand:             String           = "Alapala"
     @State private var proteinStr:        String           = ""   // boş = formül değeri
     @State private var manualPesinStr:    String           = ""   // boş = hesaplanan
-    @State private var logoImagePath:     String           = ""
-    @State private var logoPickerItem:    PhotosPickerItem? = nil
-    @State private var isLoadingLogo:     Bool             = false
+    @State private var logoImagePath:  String = ""
+    @State private var showLogoGaleri: Bool   = false
+
+    @Query(sort: \KategoriTanim.orderIndex) private var allKategoriTanimlar: [KategoriTanim]
 
     private let formOptions = ["Pelet-Granül", "Pelet", "Granül", "Toz", "TANELİ", "Diğer"]
 
-    // PDF'deki kategoriler — iki marka için
-    private let alapalaCategories = [
-        "SIĞIR SÜT YEMLERİ( 50 kg)",
-        "SIĞIR BESİ YEMLERİ( 50 kg)",
-        "SIĞIR BESİ TOZ YEMLERİ( 50 kg)",
-        "KUZU TOKLU YEMLERİ( 50 kg)",
-        "BUZAĞI YEMLERİ( 40-50 kg)",
-        "ÖZEL YEMLER( 50 kg)",
-        "KANATLI YEMLERİ ( 50 KG)",
-    ]
-    private let karadenizCategories = [
-        "SIĞIR SÜT YEMLERİ( 50 kg)",
-        "SIĞIR BESİ YEMLERİ( 50 kg)",
-        "KUZU TOKLU YEMLERİ( 50 kg)",
-        "BUZAĞI YEMLERİ( 40-50 kg)",
-        "ÖZEL YEMLER( 50 kg)",
-    ]
-
-    private var categories: [String] { brand == "Karadeniz" ? karadenizCategories : alapalaCategories }
+    // Seçili markaya ait kategoriler — KategoriYonetimView'de eklenenler dahil
+    private var categories: [String] {
+        let brandKats = allKategoriTanimlar
+            .filter { $0.brand == brand }
+            .map    { $0.name }
+        if brandKats.isEmpty {
+            // Hiç tanım yoksa sabit listeye düş
+            return [
+                "SIĞIR SÜT YEMLERİ( 50 kg)",
+                "SIĞIR BESİ YEMLERİ( 50 kg)",
+                "SIĞIR BESİ TOZ YEMLERİ( 50 kg)",
+                "KUZU TOKLU YEMLERİ( 50 kg)",
+                "BUZAĞI YEMLERİ( 40-50 kg)",
+                "ÖZEL YEMLER( 50 kg)",
+                "KANATLI YEMLERİ ( 50 KG)",
+            ]
+        }
+        return brandKats
+    }
 
     private let logoOptions = [
         ("", "Yok"),
@@ -685,6 +704,33 @@ struct ProductPricingMetaSheet: View {
                     }
                 }
 
+                // ── Protein ───────────────────────────────────────────
+                Section {
+                    HStack {
+                        Text("Formül Proteini")
+                        Spacer()
+                        if let p = formula.lastSolve?.nutrientValues["crudeProtein"] {
+                            Text(String(format: "%.1f%%", p)).foregroundStyle(.secondary)
+                        } else {
+                            Text("—").foregroundStyle(.secondary)
+                        }
+                    }
+                    HStack {
+                        Text("Manuel Protein %")
+                        Spacer()
+                        TextField("Boş = formül değeri", text: $proteinStr)
+                            .keyboardType(.decimalPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 100)
+                    }
+                } header: { Text("Protein") } footer: {
+                    if !proteinStr.isEmpty {
+                        Text("PDF'de \(proteinStr)% gösterilir.")
+                            .font(.caption2).foregroundStyle(.orange)
+                    }
+                }
+
+                // ── Fiyat hesabı ───────────────────────────────────────
                 Section("Fiyat Hesabı") {
                     HStack {
                         Text("Özel KAR %")
@@ -697,9 +743,69 @@ struct ProductPricingMetaSheet: View {
                     LabeledContent("Genel Maliyet") {
                         Text(fmt(calc.toplam) + " ₺/ton").foregroundStyle(.primary)
                     }
-                    LabeledContent("Peşin Barem (\(bagKg) kg)") {
-                        Text(fmt(calc.pesin) + " ₺").font(.headline).foregroundStyle(.orange)
+                    LabeledContent("Hesaplanan Peşin (\(bagKg) kg)") {
+                        Text(fmt(calc.pesin) + " ₺").foregroundStyle(.secondary)
                     }
+                    HStack {
+                        Text("Manuel Peşin Fiyat")
+                        Spacer()
+                        TextField("Boş = hesaplanan", text: $manualPesinStr)
+                            .keyboardType(.decimalPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 100)
+                        Text("₺").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let mp = Double(manualPesinStr.replacingOccurrences(of: ",", with: ".")), mp > 0 {
+                        Label("Tüm vadeler bu fiyat üzerinden hesaplanır", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2).foregroundStyle(.orange)
+                    }
+                }
+
+                // ── Logo (galeri + asset) ──────────────────────────────
+                Section {
+                    // Önizleme
+                    if let img = loadCurrentLogo() {
+                        HStack {
+                            Image(uiImage: img)
+                                .resizable().scaledToFit()
+                                .frame(height: 36)
+                                .padding(4)
+                                .background(Color.secondary.opacity(0.1),
+                                            in: RoundedRectangle(cornerRadius: 6))
+                            Spacer()
+                            Button { logoImagePath = ""; logoName = "" } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.red)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+
+                    Button {
+                        showLogoGaleri = true
+                    } label: {
+                        Label(logoImagePath.isEmpty && logoName.isEmpty
+                              ? "Galeriden Logo Seç"
+                              : "Logoyu Değiştir (Galeri)",
+                              systemImage: "photo.on.rectangle")
+                            .foregroundStyle(.blue)
+                    }
+
+                    Picker("Asset Catalog Logo", selection: $logoName) {
+                        ForEach(logoOptions, id: \.0) { val, label in
+                            HStack {
+                                if !val.isEmpty, UIImage(named: val) != nil {
+                                    Image(val).resizable().scaledToFit().frame(width: 24, height: 14)
+                                }
+                                Text(label)
+                            }.tag(val)
+                        }
+                    }
+                } header: {
+                    Text("Logo")
+                } footer: {
+                    Text("Galeriden yüklenen logo önceliklidir.")
+                        .font(.caption2)
                 }
 
                 Section("Liste Sırası") {
@@ -715,20 +821,37 @@ struct ProductPricingMetaSheet: View {
                 }
             }
             .onAppear { loadExisting() }
+            .fullScreenCover(isPresented: $showLogoGaleri) {
+                GaleriSecici { img in
+                    showLogoGaleri = false
+                    if let path = ProductPricingMeta.saveLogoData(img.jpegData(compressionQuality: 0.85) ?? Data()) {
+                        logoImagePath = path
+                        logoName = ""
+                    }
+                }
+                .ignoresSafeArea()
+            }
         }
     }
 
     private func loadExisting() {
         brand = existingMeta?.brand ?? defaultBrand
         guard let m = existingMeta else { return }
-        form          = m.form
-        categoryGroup = m.categoryGroup
-        bagKg         = m.bagKg
-        isVisible     = m.isVisible
-        orderIndex    = m.orderIndex
-        logoName      = m.logoName
+        form           = m.form
+        categoryGroup  = m.categoryGroup
+        bagKg          = m.bagKg
+        isVisible      = m.isVisible
+        orderIndex     = m.orderIndex
+        logoName       = m.logoName
+        logoImagePath  = m.logoImagePath
         if m.overrideKarPct >= 0 {
             overrideKarStr = String(format: "%.1f", m.overrideKarPct)
+        }
+        if m.proteinOverride >= 0 {
+            proteinStr = String(format: "%.1f", m.proteinOverride)
+        }
+        if m.manualPesin >= 0 {
+            manualPesinStr = String(format: "%.2f", m.manualPesin)
         }
     }
 
@@ -745,8 +868,21 @@ struct ProductPricingMetaSheet: View {
         meta.isVisible      = isVisible
         meta.orderIndex     = orderIndex
         meta.logoName       = logoName
-        let karVal = Double(overrideKarStr.replacingOccurrences(of: ",", with: "."))
-        meta.overrideKarPct = karVal ?? -1
+        meta.logoImagePath  = logoImagePath
+        meta.overrideKarPct = Double(overrideKarStr.replacingOccurrences(of: ",", with: ".")) ?? -1
+        meta.proteinOverride = Double(proteinStr.replacingOccurrences(of: ",", with: ".")) ?? -1
+        meta.manualPesin    = Double(manualPesinStr.replacingOccurrences(of: ",", with: ".")) ?? -1
         try? context.save()
     }
+
+    private func loadCurrentLogo() -> UIImage? {
+        if !logoImagePath.isEmpty,
+           let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let url = docs.appendingPathComponent(logoImagePath)
+            if let img = UIImage(contentsOfFile: url.path) { return img }
+        }
+        if !logoName.isEmpty { return UIImage(named: logoName) }
+        return nil
+    }
+
 }

@@ -1,6 +1,5 @@
 import SwiftUI
 import SwiftData
-import PhotosUI
 
 // MARK: - Marka Yönetimi
 
@@ -135,9 +134,8 @@ struct BrandEditSheet: View {
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss)      private var dismiss
 
-    @State private var name:          String           = ""
-    @State private var pickerItem:    PhotosPickerItem? = nil
-    @State private var isLoading:     Bool             = false
+    @State private var name:       String = ""
+    @State private var showGaleri: Bool   = false
 
     var body: some View {
         NavigationStack {
@@ -156,13 +154,12 @@ struct BrandEditSheet: View {
                             .padding(.vertical, 4)
                     }
 
-                    PhotosPicker(selection: $pickerItem, matching: .images) {
-                        Label(brand.hasCustomAntet ? "Anteti Değiştir" : "Antetli Kağıt Yükle",
-                              systemImage: "doc.badge.arrow.up")
+                    Button {
+                        showGaleri = true
+                    } label: {
+                        Label(brand.hasCustomAntet ? "Anteti Değiştir (Galeri)" : "Antetli Kağıt Yükle (Galeri)",
+                              systemImage: "photo.on.rectangle")
                             .foregroundStyle(.blue)
-                    }
-                    .onChange(of: pickerItem) { _, item in
-                        Task { await loadAntet(item) }
                     }
 
                     if brand.hasCustomAntet {
@@ -188,11 +185,12 @@ struct BrandEditSheet: View {
                 }
             }
             .onAppear { name = brand.name }
-            .overlay {
-                if isLoading {
-                    ProgressView("Yükleniyor…")
-                        .padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .fullScreenCover(isPresented: $showGaleri) {
+                GaleriSecici { img in
+                    showGaleri = false
+                    kaydetAntet(img)
                 }
+                .ignoresSafeArea()
             }
         }
     }
@@ -202,13 +200,9 @@ struct BrandEditSheet: View {
         try? context.save()
     }
 
-    @MainActor
-    private func loadAntet(_ item: PhotosPickerItem?) async {
-        guard let item else { return }
-        isLoading = true
-        defer { isLoading = false }
-        guard let data = try? await item.loadTransferable(type: Data.self) else { return }
-        if let path = BrandDefinition.saveAntetData(data, for: brand.name) {
+    private func kaydetAntet(_ img: UIImage) {
+        guard let jpeg = img.jpegData(compressionQuality: 0.90) else { return }
+        if let path = BrandDefinition.saveAntetData(jpeg, for: brand.name) {
             brand.antetImagePath = path
             try? context.save()
         }
