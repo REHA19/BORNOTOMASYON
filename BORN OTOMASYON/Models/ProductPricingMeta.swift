@@ -13,7 +13,8 @@ import Foundation
     var isVisible:      Bool    = true   // fiyat listesinde göster
     var overrideKarPct: Double  = -1.0   // -1 → global KAR% kullanılır, ≥0 → ürüne özel
     var logoName:        String  = ""       // Asset catalog logo adı
-    var logoImagePath:   String  = ""       // Documents/logos/ altındaki yüklü logo
+    var logoImagePath:   String  = ""       // (legacy — lokal fallback)
+    var logoImageData: Data? = nil   // CloudKit inline Data olarak senkronize edilir
     var brand:           String  = "Alapala"
     var proteinOverride: Double  = -1.0    // ≥0 → manuel protein %, -1 → formül değeri
     var manualPesin:     Double  = -1.0    // ≥0 → manuel peşin ₺/çuval, -1 → hesaplanan
@@ -38,8 +39,9 @@ import Foundation
         self.brand          = brand
     }
 
-    // Documents/logos/ altındaki yüklü logoyu yükle, yoksa asset catalog'a bak
+    // Logo yükle: CloudKit data → lokal dosya → asset catalog
     var logoImage: UIImage? {
+        if let data = logoImageData, let img = UIImage(data: data) { return img }
         if !logoImagePath.isEmpty,
            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
             let url = docs.appendingPathComponent(logoImagePath)

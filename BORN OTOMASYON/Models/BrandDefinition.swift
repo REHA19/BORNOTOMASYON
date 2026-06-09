@@ -4,16 +4,31 @@ import Foundation
 
 @Model final class BrandDefinition {
     var name:           String = ""
-    var antetImagePath: String = ""   // Documents/antets/ altındaki dosya adı
+    var antetImagePath: String = ""   // (legacy — lokal fallback)
     var orderIndex:     Int    = 0
+    var antetImageData: Data? = nil   // CloudKit inline Data olarak senkronize edilir
+
+    // ── Marka başına Global Gider Ayarları ───────────────────────────────
+    var giderLabel1:  String = "İP ÇUVAL"
+    var giderLabel2:  String = "% Fire"
+    var giderLabel3:  String = "Elektrik/GAZ"
+    var giderLabel4:  String = "Nakliye"
+    var giderLabel5:  String = "İşçilik"
+    var giderValue1:  Double = 262.0
+    var giderValue2:  Double = 2.0
+    var giderValue3:  Double = 270.0
+    var giderValue4:  Double = 700.0
+    var giderValue5:  Double = 2000.0
+    var karPct:       Double = 17.0
 
     init(name: String, orderIndex: Int = 0) {
         self.name       = name
         self.orderIndex = orderIndex
     }
 
-    // Antet görselini yükle (önce Documents, sonra Asset Catalog)
+    // Antet görselini yükle: CloudKit data → lokal dosya → Asset Catalog
     var antetImage: UIImage? {
+        if let data = antetImageData, let img = UIImage(data: data) { return img }
         if !antetImagePath.isEmpty,
            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
             let url = docs.appendingPathComponent(antetImagePath)
@@ -24,11 +39,12 @@ import Foundation
     }
 
     var hasCustomAntet: Bool {
-        !antetImagePath.isEmpty &&
-        FileManager.default.fileExists(
-            atPath: (FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
-                .appendingPathComponent(antetImagePath).path) ?? ""
-        )
+        if antetImageData != nil { return true }
+        return !antetImagePath.isEmpty &&
+            FileManager.default.fileExists(
+                atPath: (FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+                    .appendingPathComponent(antetImagePath).path) ?? ""
+            )
     }
 
     // Antet kaydet

@@ -13,28 +13,6 @@ struct MaliyetlendirmeView: View {
     // Seçili marka
     @AppStorage("pricing_selected_brand") private var selectedBrand: String = "Alapala"
 
-    // Global maliyet değerleri — marka başına ayrı AppStorage
-    @AppStorage("pricing_ip_cuval_Alapala")     private var ipCuvalA:  Double = 262
-    @AppStorage("pricing_fire_pct_Alapala")     private var firePctA:  Double = 2.0
-    @AppStorage("pricing_elektrik_Alapala")     private var elektrikA: Double = 270
-    @AppStorage("pricing_nakliye_Alapala")      private var nakliyeA:  Double = 700
-    @AppStorage("pricing_iscilik_Alapala")      private var iscilikA:  Double = 2000
-    @AppStorage("pricing_kar_pct_Alapala")      private var karPctA:   Double = 17
-
-    @AppStorage("pricing_ip_cuval_Karadeniz")   private var ipCuvalK:  Double = 262
-    @AppStorage("pricing_fire_pct_Karadeniz")   private var firePctK:  Double = 2.0
-    @AppStorage("pricing_elektrik_Karadeniz")   private var elektrikK: Double = 270
-    @AppStorage("pricing_nakliye_Karadeniz")    private var nakliyeK:  Double = 700
-    @AppStorage("pricing_iscilik_Karadeniz")    private var iscilikK:  Double = 2000
-    @AppStorage("pricing_kar_pct_Karadeniz")    private var karPctK:   Double = 17
-
-    // Değiştirilebilir kalem adları (global — tüm markalar için)
-    @AppStorage("pricing_label_1") private var label1: String = "İP ÇUVAL"
-    @AppStorage("pricing_label_2") private var label2: String = "% Fire"
-    @AppStorage("pricing_label_3") private var label3: String = "Elektrik/GAZ"
-    @AppStorage("pricing_label_4") private var label4: String = "Nakliye"
-    @AppStorage("pricing_label_5") private var label5: String = "İşçilik"
-
     @Query(sort: \GiderKalemi.orderIndex) private var tumGiderler: [GiderKalemi]
 
     @State private var showSettings      = false
@@ -48,9 +26,13 @@ struct MaliyetlendirmeView: View {
     @State private var showBrandYonetim  = false
     @State private var showKatYonetim    = false
 
-    // Dinamik marka listesi (yoksa varsayılan)
+    // Dinamik marka listesi — tekrar eden isimleri çıkar
     private var brands: [String] {
-        brandDefs.isEmpty ? ["Alapala", "Karadeniz"] : brandDefs.map(\.name)
+        if brandDefs.isEmpty { return ["Alapala", "Karadeniz"] }
+        var seen = Set<String>()
+        return brandDefs
+            .sorted { $0.orderIndex < $1.orderIndex }
+            .compactMap { seen.insert($0.name).inserted ? $0.name : nil }
     }
 
     // Aktif markanın kategorileri
@@ -73,21 +55,19 @@ struct MaliyetlendirmeView: View {
         aktifGiderler.map { (value: $0.value, isPercent: $0.isPercent) }
     }
 
-    // Aktif marka değerleri
-    private var ipCuval:  Double { selectedBrand == "Alapala" ? ipCuvalA  : ipCuvalK  }
-    private var firePct:  Double { selectedBrand == "Alapala" ? firePctA  : firePctK  }
-    private var elektrik: Double { selectedBrand == "Alapala" ? elektrikA : elektrikK }
-    private var nakliye:  Double { selectedBrand == "Alapala" ? nakliyeA  : nakliyeK  }
-    private var iscilik:  Double { selectedBrand == "Alapala" ? iscilikA  : iscilikK  }
-    private var karPct:   Double { selectedBrand == "Alapala" ? karPctA   : karPctK   }
+    // Aktif marka değerleri (BrandDefinition'dan okunur)
+    private var ipCuval:  Double { aktifBrandDef?.giderValue1 ?? 262 }
+    private var firePct:  Double { aktifBrandDef?.giderValue2 ?? 2.0 }
+    private var elektrik: Double { aktifBrandDef?.giderValue3 ?? 270 }
+    private var nakliye:  Double { aktifBrandDef?.giderValue4 ?? 700 }
+    private var iscilik:  Double { aktifBrandDef?.giderValue5 ?? 2000 }
+    private var karPct:   Double { aktifBrandDef?.karPct      ?? 17  }
 
-    // Aktif marka binding'leri
-    private var ipCuvalB:  Binding<Double>  { selectedBrand == "Alapala" ? $ipCuvalA  : $ipCuvalK  }
-    private var firePctB:  Binding<Double>  { selectedBrand == "Alapala" ? $firePctA  : $firePctK  }
-    private var elektrikB: Binding<Double>  { selectedBrand == "Alapala" ? $elektrikA : $elektrikK }
-    private var nakliyeB:  Binding<Double>  { selectedBrand == "Alapala" ? $nakliyeA  : $nakliyeK  }
-    private var iscilikB:  Binding<Double>  { selectedBrand == "Alapala" ? $iscilikA  : $iscilikK  }
-    private var karPctB:   Binding<Double>  { selectedBrand == "Alapala" ? $karPctA   : $karPctK   }
+    private var label1: String { aktifBrandDef?.giderLabel1 ?? "İP ÇUVAL"     }
+    private var label2: String { aktifBrandDef?.giderLabel2 ?? "% Fire"        }
+    private var label3: String { aktifBrandDef?.giderLabel3 ?? "Elektrik/GAZ"  }
+    private var label4: String { aktifBrandDef?.giderLabel4 ?? "Nakliye"       }
+    private var label5: String { aktifBrandDef?.giderLabel5 ?? "İşçilik"       }
 
     private var rows: [(formula: BlendFormula, meta: ProductPricingMeta?)] {
         let metaByCode = Dictionary(metas.map { ($0.formulaCode, $0) },
@@ -227,12 +207,6 @@ struct MaliyetlendirmeView: View {
                     kategoriler: aktifKategoriler
                 )
             }
-            .sheet(isPresented: $showLabelEditor) {
-                CostLabelEditorSheet(
-                    label1: $label1, label2: $label2,
-                    label3: $label3, label4: $label4, label5: $label5
-                )
-            }
             .sheet(isPresented: $showIskontoAnaliz) {
                 IskontoAnalizView(
                     rows:        rows,
@@ -263,79 +237,49 @@ struct MaliyetlendirmeView: View {
 
     // MARK: - Global ayarlar içeriği
 
+    @ViewBuilder
     private var globalSettingsContent: some View {
-        VStack(spacing: 0) {
-            // ── 5 sabit kalem ─────────────────────────────────────────
-            PricingInputRow(label: label1, unit: "₺/ton", value: ipCuvalB)
-            PricingInputRow(label: label2, unit: "%",      value: firePctB)
-            PricingInputRow(label: label3, unit: "₺/ton", value: elektrikB)
-            PricingInputRow(label: label4, unit: "₺/ton", value: nakliyeB)
-            PricingInputRow(label: label5, unit: "₺/ton", value: iscilikB)
-
-            // ── Dinamik ek gider kalemleri ─────────────────────────────
-            if !aktifGiderler.isEmpty {
-                Divider().padding(.vertical, 3)
-                ForEach(aktifGiderler) { item in
-                    HStack {
-                        Text(item.name)
-                            .font(.subheadline)
-                            .foregroundStyle(.purple)
-                            .frame(minWidth: 110, alignment: .leading)
-                        Spacer()
-                        Text(fmtGider(item.value))
-                            .font(.subheadline.monospacedDigit())
-                        Text(item.unitLabel)
-                            .font(.caption).foregroundStyle(.secondary)
-                            .frame(width: 36, alignment: .leading)
-                        Button {
-                            context.delete(item)
-                            try? context.save()
-                        } label: {
-                            Image(systemName: "minus.circle.fill")
-                                .foregroundStyle(.red)
-                        }
-                        .buttonStyle(.borderless)
-                    }
-                    .padding(.vertical, 2)
-                }
-            }
-
-            // ── Yeni kalem ekle ────────────────────────────────────────
-            Button {
-                showAddGider = true
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "plus.circle.fill").foregroundStyle(.purple)
-                    Text("Gider Kalemi Ekle")
-                        .font(.subheadline).foregroundStyle(.purple)
-                }
-            }
-            .padding(.vertical, 6)
-
-            Divider().padding(.vertical, 4)
-            PricingInputRow(label: "Kar Marjı", unit: "%", value: karPctB, accent: .orange)
-            Divider().padding(.vertical, 4)
-            Button {
-                showLabelEditor = true
-            } label: {
-                HStack {
-                    Image(systemName: "pencil.circle").foregroundStyle(.blue)
-                    Text("Kalem Adlarını Düzenle")
-                        .font(.subheadline).foregroundStyle(.blue)
-                }
-            }
-            .padding(.vertical, 6)
+        if let brand = aktifBrandDef {
+            BrandGiderAyarlari(
+                brand:      brand,
+                ekGiderler: aktifGiderler,
+                onEkle:     { showAddGider = true },
+                onSil:      { item in context.delete(item); try? context.save() }
+            )
+        } else {
+            Text("Önce bir marka oluşturun.")
+                .font(.caption).foregroundStyle(.secondary).padding()
         }
     }
 
     // MARK: - İlk açılışta varsayılan markalar
 
     private func seedDefaultsIfNeeded() {
-        guard brandDefs.isEmpty else { return }
+        // Önce mevcut tekrarları temizle (CloudKit çift seed yarattıysa)
+        deduplicateBrands()
+
+        // Eksik varsayılanları ekle
+        let existingNames = Set(brandDefs.map { $0.name })
         let defaults = [("Alapala", 0), ("Karadeniz", 1)]
+        var inserted = false
         for (name, idx) in defaults {
+            guard !existingNames.contains(name) else { continue }
             context.insert(BrandDefinition(name: name, orderIndex: idx))
+            inserted = true
         }
+        if inserted { try? context.save() }
+    }
+
+    /// Aynı isimde birden fazla BrandDefinition varsa ilki dışındakileri sil
+    private func deduplicateBrands() {
+        var seen  = Set<String>()
+        var toDelete: [BrandDefinition] = []
+        for b in brandDefs.sorted(by: { $0.orderIndex < $1.orderIndex }) {
+            if seen.contains(b.name) { toDelete.append(b) }
+            else                     { seen.insert(b.name) }
+        }
+        guard !toDelete.isEmpty else { return }
+        toDelete.forEach { context.delete($0) }
         try? context.save()
     }
 
@@ -356,14 +300,89 @@ struct MaliyetlendirmeView: View {
         try? context.save()
     }
 
-    private func fmtGider(_ v: Double) -> String {
+}
+
+// MARK: - Marka başına Global Gider Ayarları (@Bindable ile BrandDefinition'a bağlanır)
+
+private struct BrandGiderAyarlari: View {
+    @Bindable var brand:       BrandDefinition
+    let ekGiderler:  [GiderKalemi]
+    let onEkle:      () -> Void
+    let onSil:       (GiderKalemi) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PricingInputRow(label: brand.giderLabel1, unit: "₺/ton", value: $brand.giderValue1)
+            PricingInputRow(label: brand.giderLabel2, unit: "%",      value: $brand.giderValue2)
+            PricingInputRow(label: brand.giderLabel3, unit: "₺/ton", value: $brand.giderValue3)
+            PricingInputRow(label: brand.giderLabel4, unit: "₺/ton", value: $brand.giderValue4)
+            PricingInputRow(label: brand.giderLabel5, unit: "₺/ton", value: $brand.giderValue5)
+
+            if !ekGiderler.isEmpty {
+                Divider().padding(.vertical, 3)
+                ForEach(ekGiderler) { item in
+                    HStack {
+                        Text(item.name).font(.subheadline).foregroundStyle(.purple)
+                            .frame(minWidth: 110, alignment: .leading)
+                        Spacer()
+                        Text(fmtV(item.value)).font(.subheadline.monospacedDigit())
+                        Text(item.unitLabel).font(.caption).foregroundStyle(.secondary)
+                            .frame(width: 36, alignment: .leading)
+                        Button { onSil(item) } label: {
+                            Image(systemName: "minus.circle.fill").foregroundStyle(.red)
+                        }.buttonStyle(.borderless)
+                    }.padding(.vertical, 2)
+                }
+            }
+
+            Button { onEkle() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "plus.circle.fill").foregroundStyle(.purple)
+                    Text("Gider Kalemi Ekle").font(.subheadline).foregroundStyle(.purple)
+                }
+            }.padding(.vertical, 6)
+
+            Divider().padding(.vertical, 4)
+            PricingInputRow(label: "Kar Marjı", unit: "%", value: $brand.karPct, accent: .orange)
+            Divider().padding(.vertical, 4)
+
+            // Kalem adlarını bu marka için düzenle
+            NavigationLink {
+                Form {
+                    Section("Kalem Adları — \(brand.name)") {
+                        TextField("Kalem 1", text: $brand.giderLabel1)
+                        TextField("Kalem 2", text: $brand.giderLabel2)
+                        TextField("Kalem 3", text: $brand.giderLabel3)
+                        TextField("Kalem 4", text: $brand.giderLabel4)
+                        TextField("Kalem 5", text: $brand.giderLabel5)
+                    }
+                    Section {
+                        Button("Varsayılana Sıfırla") {
+                            brand.giderLabel1 = "İP ÇUVAL"
+                            brand.giderLabel2 = "% Fire"
+                            brand.giderLabel3 = "Elektrik/GAZ"
+                            brand.giderLabel4 = "Nakliye"
+                            brand.giderLabel5 = "İşçilik"
+                        }.foregroundStyle(.red)
+                    }
+                }
+                .navigationTitle("Kalem Adları")
+            } label: {
+                HStack {
+                    Image(systemName: "pencil.circle").foregroundStyle(.blue)
+                    Text("Kalem Adlarını Düzenle").font(.subheadline).foregroundStyle(.blue)
+                }
+            }.padding(.vertical, 6)
+        }
+    }
+
+    private func fmtV(_ v: Double) -> String {
         v.truncatingRemainder(dividingBy: 1) == 0
-            ? String(format: "%.0f", v)
-            : String(format: "%.2f", v)
+            ? String(format: "%.0f", v) : String(format: "%.2f", v)
     }
 }
 
-// MARK: - Kalem adı düzenleme sheet'i
+// MARK: - Kalem adı düzenleme sheet'i (artık BrandGiderAyarlari içinde, geriye uyumluluk için bırakıldı)
 
 struct CostLabelEditorSheet: View {
     @Binding var label1: String
@@ -599,8 +618,8 @@ struct ProductPricingMetaSheet: View {
     @State private var brand:             String           = "Alapala"
     @State private var proteinStr:        String           = ""   // boş = formül değeri
     @State private var manualPesinStr:    String           = ""   // boş = hesaplanan
-    @State private var logoImagePath:  String = ""
-    @State private var showLogoGaleri: Bool   = false
+    @State private var logoImagePath: String  = ""
+    @State private var logoImageData: Data?   = nil
 
     @Query(sort: \KategoriTanim.orderIndex) private var allKategoriTanimlar: [KategoriTanim]
 
@@ -781,14 +800,15 @@ struct ProductPricingMetaSheet: View {
                         }
                     }
 
-                    Button {
-                        showLogoGaleri = true
-                    } label: {
-                        Label(logoImagePath.isEmpty && logoName.isEmpty
-                              ? "Galeriden Logo Seç"
-                              : "Logoyu Değiştir (Galeri)",
-                              systemImage: "photo.on.rectangle")
-                            .foregroundStyle(.blue)
+                    ResimYukleButon(
+                        baslik: logoImagePath.isEmpty && logoName.isEmpty
+                                ? "Logo Seç (Galeri veya Dosya)"
+                                : "Logoyu Değiştir"
+                    ) { img in
+                        // Data olarak sakla — CloudKit ile senkronize edilir
+                        logoImageData = img.jpegData(compressionQuality: 0.85)
+                        logoImagePath = ""
+                        logoName      = ""
                     }
 
                     Picker("Asset Catalog Logo", selection: $logoName) {
@@ -821,16 +841,6 @@ struct ProductPricingMetaSheet: View {
                 }
             }
             .onAppear { loadExisting() }
-            .fullScreenCover(isPresented: $showLogoGaleri) {
-                GaleriSecici { img in
-                    showLogoGaleri = false
-                    if let path = ProductPricingMeta.saveLogoData(img.jpegData(compressionQuality: 0.85) ?? Data()) {
-                        logoImagePath = path
-                        logoName = ""
-                    }
-                }
-                .ignoresSafeArea()
-            }
         }
     }
 
@@ -844,6 +854,7 @@ struct ProductPricingMetaSheet: View {
         orderIndex     = m.orderIndex
         logoName       = m.logoName
         logoImagePath  = m.logoImagePath
+        logoImageData  = m.logoImageData
         if m.overrideKarPct >= 0 {
             overrideKarStr = String(format: "%.1f", m.overrideKarPct)
         }
@@ -869,6 +880,7 @@ struct ProductPricingMetaSheet: View {
         meta.orderIndex     = orderIndex
         meta.logoName       = logoName
         meta.logoImagePath  = logoImagePath
+        meta.logoImageData  = logoImageData
         meta.overrideKarPct = Double(overrideKarStr.replacingOccurrences(of: ",", with: ".")) ?? -1
         meta.proteinOverride = Double(proteinStr.replacingOccurrences(of: ",", with: ".")) ?? -1
         meta.manualPesin    = Double(manualPesinStr.replacingOccurrences(of: ",", with: ".")) ?? -1
@@ -876,6 +888,7 @@ struct ProductPricingMetaSheet: View {
     }
 
     private func loadCurrentLogo() -> UIImage? {
+        if let data = logoImageData, let img = UIImage(data: data) { return img }
         if !logoImagePath.isEmpty,
            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
             let url = docs.appendingPathComponent(logoImagePath)

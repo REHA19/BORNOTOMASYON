@@ -134,8 +134,7 @@ struct BrandEditSheet: View {
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss)      private var dismiss
 
-    @State private var name:       String = ""
-    @State private var showGaleri: Bool   = false
+    @State private var name: String = ""
 
     var body: some View {
         NavigationStack {
@@ -154,12 +153,11 @@ struct BrandEditSheet: View {
                             .padding(.vertical, 4)
                     }
 
-                    Button {
-                        showGaleri = true
-                    } label: {
-                        Label(brand.hasCustomAntet ? "Anteti Değiştir (Galeri)" : "Antetli Kağıt Yükle (Galeri)",
-                              systemImage: "photo.on.rectangle")
-                            .foregroundStyle(.blue)
+                    ResimYukleButon(
+                        baslik: brand.hasCustomAntet ? "Anteti Değiştir" : "Antetli Kağıt Yükle",
+                        ikon: "doc.badge.arrow.up"
+                    ) { img in
+                        kaydetAntet(img)
                     }
 
                     if brand.hasCustomAntet {
@@ -185,13 +183,6 @@ struct BrandEditSheet: View {
                 }
             }
             .onAppear { name = brand.name }
-            .fullScreenCover(isPresented: $showGaleri) {
-                GaleriSecici { img in
-                    showGaleri = false
-                    kaydetAntet(img)
-                }
-                .ignoresSafeArea()
-            }
         }
     }
 
@@ -202,9 +193,8 @@ struct BrandEditSheet: View {
 
     private func kaydetAntet(_ img: UIImage) {
         guard let jpeg = img.jpegData(compressionQuality: 0.90) else { return }
-        if let path = BrandDefinition.saveAntetData(jpeg, for: brand.name) {
-            brand.antetImagePath = path
-            try? context.save()
-        }
+        brand.antetImageData = jpeg   // CloudKit CKAsset olarak senkronize edilir
+        brand.antetImagePath = ""     // eski lokal path artık kullanılmıyor
+        try? context.save()
     }
 }

@@ -145,6 +145,7 @@ struct PricingPDFService {
                     protein:       effectiveProtein,
                     logoName:      meta?.logoName ?? "",
                     logoImagePath: meta?.logoImagePath ?? "",
+                    logoImageData: meta?.logoImageData,
                     category:      meta?.categoryGroup ?? "",
                     orderIdx:      meta?.orderIndex ?? 999,
                     calc:          calc,
@@ -570,7 +571,7 @@ struct PricingPDFService {
             x += C.urun
 
             // Logo — nizami kutu içinde, ölçekli ve ortalı
-            if let img = loadLogoImage(name: row.logoName, path: row.logoImagePath) {
+            if let img = loadLogoImage(name: row.logoName, path: row.logoImagePath, data: row.logoImageData) {
                 let pad:  CGFloat = 1.5
                 let bx   = x + pad;         let by = curY + pad
                 let bw   = C.logo - pad*2;  let bh = rowH  - pad*2
@@ -761,7 +762,7 @@ struct PricingPDFService {
 
     private static func protStr(_ p: Double?) -> String {
         guard let p, p > 0 else { return "—" }
-        return String(format: "%.0f", p)
+        return String(format: "%.0f", ceil(p))   // 17.5 → 18, 19.5 → 20
     }
 
     static func writeToTemp(data: Data, filename: String = "FiyatListesi") -> URL? {
@@ -781,18 +782,23 @@ struct PricingPDFService {
         let protein:       Double?
         let logoName:      String
         let logoImagePath: String
+        let logoImageData: Data?    // CloudKit'ten gelen görsel verisi
         let category:      String
         let orderIdx:      Int
         let calc:          PricingCalc
-        let manualPesin:   Double   // -1 = hesaplanan
+        let manualPesin:   Double
     }
 
-    private static func loadLogoImage(name: String, path: String) -> UIImage? {
+    private static func loadLogoImage(name: String, path: String, data: Data?) -> UIImage? {
+        // 1. CloudKit data
+        if let data, let img = UIImage(data: data) { return img }
+        // 2. Lokal dosya (legacy)
         if !path.isEmpty,
            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
             let url = docs.appendingPathComponent(path)
             if let img = UIImage(contentsOfFile: url.path) { return img }
         }
+        // 3. Asset catalog
         if !name.isEmpty { return UIImage(named: name) }
         return nil
     }

@@ -227,7 +227,17 @@ private struct VadeRow: View {
 struct ShareSheet: UIViewControllerRepresentable {
     let url: URL
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        let vc = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        // iPad / macOS Catalyst: popover anchor gerekiyor
+        if let scene  = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let window = scene.windows.first(where: { $0.isKeyWindow }) {
+            vc.popoverPresentationController?.sourceView = window
+            vc.popoverPresentationController?.sourceRect = CGRect(
+                x: window.bounds.midX, y: window.bounds.midY, width: 0, height: 0
+            )
+            vc.popoverPresentationController?.permittedArrowDirections = []
+        }
+        return vc
     }
     func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }

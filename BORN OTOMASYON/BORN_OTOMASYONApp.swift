@@ -36,91 +36,60 @@ struct BornOtomasyonApp: App {
 
     private static let ckContainerID = "iCloud.com.rehabasmaci.BORNOTOM"
 
-    // CloudKit'te sync'lenen ana modeller
-    private static let ckModels: [any PersistentModel.Type] = [
-        FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
-        FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self
-    ]
-
-    // Local-only modeller (CloudKit sync yok)
-    private static let localModels: [any PersistentModel.Type] = [
-        FormulaCostEntry.self, ProductPricingMeta.self, PriceListArchive.self,
-        GiderKalemi.self, BrandDefinition.self, KategoriTanim.self
+    // Tüm modeller — hepsinde CloudKit için default değer zorunlu
+    private static let allModels: [any PersistentModel.Type] = [
+        FeedIngredient.self,
+        PriceHistoryEntry.self,
+        BlendFormula.self,
+        FormulaTemplate.self,
+        MultiBlendGroup.self,
+        SendRecord.self,
+        ProductPricingMeta.self,
+        BrandDefinition.self,
+        KategoriTanim.self,
+        GiderKalemi.self,
+        FormulaCostEntry.self,
+        PriceListArchive.self,
     ]
 
     private static func makeContainer() -> ModelContainer {
-        let fullSchema = Schema([
-            FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
-            FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self,
-            FormulaCostEntry.self, ProductPricingMeta.self, PriceListArchive.self,
-            GiderKalemi.self, BrandDefinition.self, KategoriTanim.self
-        ])
+        let schema = Schema(allModels)
 
-        // 1. CloudKit + Local (tercih edilen)
+        // ── 1. CloudKit  ──────────────────────────────────────────────────
+        // "ckStore" adını koruyoruz — mevcut CloudKit kaydıyla uyumlu.
+        // Yeni modeller ekleniyor: lightweight migration (yeni tablolar).
         do {
-            let ckConfig = ModelConfiguration(
+            let config = ModelConfiguration(
                 "ckStore",
-                schema: Schema(ckModels),
+                schema: schema,
                 cloudKitDatabase: .private(ckContainerID)
             )
-            let localConfig = ModelConfiguration(
-                "localStore",
-                schema: Schema(localModels),
-                cloudKitDatabase: .none
-            )
-            let c = try ModelContainer(for: fullSchema, configurations: [ckConfig, localConfig])
-            print("✅ BORN: CloudKit aktif + local store — veri senkronize ediliyor")
-            return c
-        } catch {
-            print("❌ BORN: CloudKit+local hatası: \(error)")
-        }
-
-        // 2. CloudKit tek config
-        do {
-            let c = try ModelContainer(
-                for: FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
-                    FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self,
-                    FormulaCostEntry.self, ProductPricingMeta.self, PriceListArchive.self,
-                    GiderKalemi.self, BrandDefinition.self, KategoriTanim.self,
-                configurations: ModelConfiguration(cloudKitDatabase: .private(ckContainerID))
-            )
-            print("✅ BORN: CloudKit container aktif")
+            let c = try ModelContainer(for: schema, configurations: [config])
+            print("✅ BORN: CloudKit aktif — iPhone ↔ Mac senkronize")
             return c
         } catch {
             print("❌ BORN: CloudKit hatası: \(error)")
         }
 
-        // 3. Yerel store
+        // ── 2. Yerel (iCloud yoksa) ────────────────────────────────────────
         do {
-            let c = try ModelContainer(
-                for: FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
-                    FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self,
-                    FormulaCostEntry.self, ProductPricingMeta.self, PriceListArchive.self,
-                    GiderKalemi.self, BrandDefinition.self, KategoriTanim.self,
-                configurations: ModelConfiguration(cloudKitDatabase: .none)
+            let config = ModelConfiguration(
+                "localStore",
+                schema: schema,
+                cloudKitDatabase: .none
             )
+            let c = try ModelContainer(for: schema, configurations: [config])
             print("⚠️ BORN: Yerel store — sync YOK")
             return c
         } catch {
             print("❌ BORN: Yerel store hatası: \(error)")
         }
 
-        // 4. Son çare
+        // ── 3. In-memory (asla crash vermez) ──────────────────────────────
+        print("🚨 BORN: In-memory store — veri kalıcı değil")
         return try! ModelContainer(
-            for: FeedIngredient.self, PriceHistoryEntry.self, BlendFormula.self,
-                FormulaTemplate.self, MultiBlendGroup.self, SendRecord.self,
-                FormulaCostEntry.self, ProductPricingMeta.self,
-            configurations: ModelConfiguration(cloudKitDatabase: .none)
+            for: schema,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
         )
-    }
-
-    private static func nukeApplicationSupport() {
-        let fm = FileManager.default
-        guard let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-        else { return }
-        guard let contents = try? fm.contentsOfDirectory(
-            at: support, includingPropertiesForKeys: nil, options: []
-        ) else { return }
-        for url in contents { try? fm.removeItem(at: url) }
     }
 }
