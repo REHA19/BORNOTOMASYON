@@ -2,41 +2,6 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 
-// MARK: - Fotoğraflar'dan seçici (PHPickerViewController — iOS + macOS Catalyst)
-
-struct FotografSecici: UIViewControllerRepresentable {
-    var onSecim: (UIImage) -> Void
-
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-
-    func makeUIViewController(context: Context) -> PHPickerViewController {
-        var config = PHPickerConfiguration(photoLibrary: .shared())
-        config.filter         = .images
-        config.selectionLimit = 1
-        let picker = PHPickerViewController(configuration: config)
-        picker.delegate = context.coordinator
-        return picker
-    }
-
-    func updateUIViewController(_ vc: PHPickerViewController, context: Context) {}
-
-    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
-        let parent: FotografSecici
-        init(_ p: FotografSecici) { parent = p }
-
-        func picker(_ picker: PHPickerViewController,
-                    didFinishPicking results: [PHPickerResult]) {
-            picker.dismiss(animated: true)
-            guard let result = results.first else { return }
-            result.itemProvider.loadObject(ofClass: UIImage.self) { obj, _ in
-                if let img = obj as? UIImage {
-                    DispatchQueue.main.async { self.parent.onSecim(img) }
-                }
-            }
-        }
-    }
-}
-
 // MARK: - Dosyalar'dan seçici (UIDocumentPickerViewController — PDF + resim)
 
 struct DosyaSecici: UIViewControllerRepresentable {
@@ -64,13 +29,23 @@ struct DosyaSecici: UIViewControllerRepresentable {
                   url.startAccessingSecurityScopedResource() else { return }
             defer { url.stopAccessingSecurityScopedResource() }
 
-            if let img = UIImage(contentsOfFile: url.path) {
+            // PDF → ilk sayfa olarak render et
+            if url.pathExtension.lowercased() == "pdf" {
+                if let img = Self.pdfToImage(url) {
+                    DispatchQueue.main.async { self.parent.onSecim(img) }
+                }
+                return
+            }
+
+            // Önce Data bazlı yükleme dene (HEIC, WebP, PNG, JPEG vs. hepsi çalışır)
+            if let data = try? Data(contentsOf: url),
+               let img  = UIImage(data: data) {
                 DispatchQueue.main.async { self.parent.onSecim(img) }
                 return
             }
-            // PDF → ilk sayfa olarak render et
-            if url.pathExtension.lowercased() == "pdf",
-               let img = Self.pdfToImage(url) {
+
+            // Fallback: dosya yolu (legacy)
+            if let img = UIImage(contentsOfFile: url.path) {
                 DispatchQueue.main.async { self.parent.onSecim(img) }
             }
         }
@@ -102,7 +77,8 @@ struct ResimYukleButon: View {
     var onSecim:   (UIImage) -> Void
 
     @State private var showDialog  = false
-    @State private var showFoto    = false
+    @State private var showPhotos  = false
+    @State private var photoItem:  PhotosPickerItem?
     @State private var showDosya   = false
 
     var body: some View {
@@ -110,12 +86,20 @@ struct ResimYukleButon: View {
             Label(baslik, systemImage: ikon).foregroundStyle(.blue)
         }
         .confirmationDialog("Resim kaynağı seçin", isPresented: $showDialog) {
-            Button("Fotoğraflardan Seç") { showFoto  = true }
-            Button("Dosyalardan Seç")    { showDosya = true }
+            Button("Fotoğraflardan Seç") { showPhotos = true }
+            Button("Dosyalardan Seç")    { showDosya  = true }
         }
-        .sheet(isPresented: $showFoto) {
-            FotografSecici { img in showFoto = false; onSecim(img) }
-                .ignoresSafeArea()
+        // Native PhotosPicker — loadTransferable(type: Data.self) HEIC/PNG/JPEG hepsini güvenilir çözer
+        .photosPicker(isPresented: $showPhotos, selection: $photoItem, matching: .images)
+        .onChange(of: photoItem) { _, item in
+            guard let item else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self),
+                   let img  = UIImage(data: data) {
+                    await MainActor.run { onSecim(img) }
+                }
+                await MainActor.run { photoItem = nil }
+            }
         }
         .sheet(isPresented: $showDosya) {
             DosyaSecici { img in showDosya = false; onSecim(img) }

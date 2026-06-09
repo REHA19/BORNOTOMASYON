@@ -24,16 +24,20 @@ struct FiyatListesiView: View {
     @Environment(\.dismiss)      private var dismiss
     @Environment(\.modelContext) private var context
 
+    @Query(sort: \PriceListArchive.savedAt, order: .reverse) private var allArchives: [PriceListArchive]
+
     @AppStorage("pricing_vade_tek_cekim") private var vadeTekCekim: Double = 2.8
     @AppStorage("pricing_vade_30gun")     private var vade30:       Double = 4.5
     @AppStorage("pricing_vade_60gun")     private var vade60:       Double = 9.2
     @AppStorage("pricing_vade_90gun")     private var vade90:       Double = 14.1
     @AppStorage("pricing_list_period")    private var period:        String = ""
 
+    @State private var revision:           String = ""
     @State private var isGenerating        = false
     @State private var shareURL:           URL?  = nil
     @State private var showShare                 = false
-    @State private var pendingArchiveFile: String? = nil
+    // Üretim sonrası arşivlenecek yayın bilgisi (nil = sadece taslak, kayıt yok)
+    @State private var pendingPublish:     (file: String, prices: [PriceSnap])? = nil
 
     private var vadeConfig: PricingPDFService.VadeConfig {
         PricingPDFService.VadeConfig(
@@ -56,6 +60,13 @@ struct FiyatListesiView: View {
                         Text("Dönem / Tarih")
                         Spacer()
                         TextField("örn: Haziran 2026", text: $period)
+                            .multilineTextAlignment(.trailing)
+                            .font(.subheadline)
+                    }
+                    HStack {
+                        Text("Revizyon No")
+                        Spacer()
+                        TextField("örn: 2026-07", text: $revision)
                             .multilineTextAlignment(.trailing)
                             .font(.subheadline)
                     }
@@ -98,8 +109,9 @@ struct FiyatListesiView: View {
                 }
 
                 Section {
+                    // Taslak — sadece paylaş, kayıt etme
                     Button {
-                        generateAndShare()
+                        generate(publish: false)
                     } label: {
                         HStack {
                             if isGenerating {
@@ -112,6 +124,23 @@ struct FiyatListesiView: View {
                         }
                     }
                     .disabled(isGenerating || visibleCount == 0)
+
+                    // Yayınla — piyasaya sun + arşive kaydet (karşılaştırma için fiyat snapshot'ı)
+                    Button {
+                        generate(publish: true)
+                    } label: {
+                        HStack {
+                            Image(systemName: "paperplane.fill").foregroundStyle(.white)
+                            Text("Yayınla ve Kaydet").fontWeight(.bold).foregroundStyle(.white)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                    }
+                    .listRowBackground(visibleCount == 0 ? Color.gray : Color.green)
+                    .disabled(isGenerating || visibleCount == 0)
+                } footer: {
+                    Text("“Yayınla” listeyi resmi olarak kaydeder; bir sonraki yayınla karşılaştırılıp fiyat değişim raporu üretilir.")
+                        .font(.caption2)
                 }
             }
             .navigationTitle("\(brand) Fiyat Listesi")
@@ -124,30 +153,68 @@ struct FiyatListesiView: View {
             .sheet(isPresented: $showShare) {
                 if let url = shareURL { ShareSheet(url: url) }
             }
-            .onChange(of: pendingArchiveFile) { _, filename in
-                guard let filename else { return }
-                let archive = PriceListArchive(brand: brand, period: period, fileName: filename)
+            .onAppear { suggestRevisionIfNeeded() }
+            .onChange(of: pendingPublish?.file) { _, _ in
+                guard let pub = pendingPublish else { return }
+                let archive = PriceListArchive(
+                    brand:       brand,
+                    period:      period,
+                    fileName:    pub.file,
+                    revision:    revision.trimmingCharacters(in: .whitespaces),
+                    isPublished: true,
+                    prices:      pub.prices
+                )
                 context.insert(archive)
                 try? context.save()
-                pendingArchiveFile = nil
+                pendingPublish = nil
             }
         }
     }
 
-    // MARK: - PDF üret + arşivle + paylaş
+    // İlk açılışta revizyon önerisi: "YIL-NN" (NN = bu yıl yayınlanan liste sayısı + 1)
+    private func suggestRevisionIfNeeded() {
+        guard revision.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        let year = Calendar.current.component(.year, from: Date())
+        let publishedThisYear = allArchives.filter {
+            $0.brand == brand && $0.isPublished &&
+            Calendar.current.component(.year, from: $0.savedAt) == year
+        }.count
+        revision = String(format: "%d-%02d", year, publishedThisYear + 1)
+    }
 
-    private func generateAndShare() {
+    // PDF'teki peşin fiyatla birebir aynı hesap — karşılaştırma snapshot'ı
+    private func buildPriceSnaps() -> [PriceSnap] {
+        rows.filter { $0.meta?.isVisible ?? true }.map { row in
+            let rasyon = row.formula.currentCostTL > 0 ? row.formula.currentCostTL : row.formula.recordedCostTL
+            let effKar = (row.meta?.overrideKarPct ?? -1) >= 0 ? row.meta!.overrideKarPct : globalKarPct
+            let bagKg  = row.meta?.bagKg ?? 50
+            let calc   = PricingCalc.calculate(
+                rasyon: rasyon, ipCuval: ipCuval, firePct: firePct,
+                elektrik: elektrik, nakliye: nakliye, iscilik: iscilik,
+                karPct: effKar, bagKg: bagKg, extraItems: extraItems
+            )
+            let manual = row.meta?.manualPesin ?? -1
+            let pesin  = manual >= 0 ? manual : calc.pesin
+            return PriceSnap(code: row.formula.code, name: row.formula.name, pesin: pesin)
+        }
+    }
+
+    // MARK: - PDF üret + paylaş (+ publish ise arşivle)
+
+    private func generate(publish: Bool) {
         isGenerating = true
 
         // Tüm SwiftData model verileri ve view property'leri main thread'de yakala
         let capturedRows   = rows
         let capturedBrand  = brand
         let capturedPeriod = period
+        let capturedRev    = revision.trimmingCharacters(in: .whitespaces)
         let config         = vadeConfig
         let vals           = (ipCuval, firePct, elektrik, nakliye, iscilik, globalKarPct)
         let capturedExtra  = extraItems
         let capturedAntet  = antetImage
         let katInfo        = kategoriler.map { (name: $0.name, color: $0.uiColor, order: $0.orderIndex) }
+        let snaps          = publish ? buildPriceSnaps() : []
 
         Task.detached(priority: .userInitiated) {
             let data = PricingPDFService.generate(
@@ -158,15 +225,20 @@ struct FiyatListesiView: View {
                 elektrik: vals.2, nakliye: vals.3,
                 iscilik: vals.4, globalKarPct: vals.5,
                 vade: config, period: capturedPeriod,
+                revision: capturedRev,
                 extraItems: capturedExtra
             )
 
-            // Arşiv dosyası: Documents/FiyatListesi_Alapala_2026-06-08_1430.pdf
-            let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd_HHmm"
-            let dateStr  = df.string(from: Date())
-            let filename = "FiyatListesi_\(capturedBrand)_\(dateStr).pdf"
-            if let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-                try? data.write(to: docsDir.appendingPathComponent(filename))
+            // Yayınlanıyorsa kalıcı dosya olarak Documents'a yaz
+            var savedFile: String? = nil
+            if publish {
+                let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd_HHmm"
+                let dateStr  = df.string(from: Date())
+                let filename = "FiyatListesi_\(capturedBrand)_\(dateStr).pdf"
+                if let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                    try? data.write(to: docsDir.appendingPathComponent(filename))
+                    savedFile = filename
+                }
             }
 
             // Paylaşım için geçici URL
@@ -174,10 +246,10 @@ struct FiyatListesiView: View {
             let tempURL   = PricingPDFService.writeToTemp(data: data,
                                                           filename: "FiyatListesi\(periodStr)")
             await MainActor.run {
-                isGenerating       = false
-                shareURL           = tempURL
-                showShare          = tempURL != nil
-                pendingArchiveFile = filename
+                isGenerating = false
+                shareURL     = tempURL
+                showShare    = tempURL != nil
+                if publish, let savedFile { pendingPublish = (file: savedFile, prices: snaps) }
             }
         }
     }

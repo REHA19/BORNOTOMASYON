@@ -448,6 +448,7 @@ struct FormulaEditorView: View {
     @State private var vm                    = FormulaEditorVM()
     @State private var showMultiBlendExport  = false
     @State private var showFormulaExport     = false
+    @State private var showAssistant         = false
     @State private var breakdownTarget:      BreakdownTarget? = nil
 
     init(formula: BlendFormula?, showCloseButton: Bool = false,
@@ -503,6 +504,9 @@ struct FormulaEditorView: View {
                 if let f = formula {
                     FormulaExportSheet(formula: f, library: library)
                 }
+            }
+            .sheet(isPresented: $showAssistant) {
+                RationAssistantSheet(vm: vm)
             }
             .sheet(isPresented: $vm.showCombinations) {
                 CombinationsView(
@@ -989,53 +993,60 @@ struct FormulaEditorView: View {
                 Button("Kapat") { dismiss() }
             }
         }
+
+        // İkincil aksiyonlar — gerçek bir Menu (her zaman açılır, taşma sorunu olmaz)
         ToolbarItem(placement: .primaryAction) {
-            HStack(spacing: 12) {
+            Menu {
                 // PDF / TXT / Excel export — only for saved formulas
                 if formula != nil, !vm.code.isEmpty {
                     Button {
                         saveAction()
                         showFormulaExport = true
                     } label: {
-                        Image(systemName: "square.and.arrow.up")
-                            .foregroundStyle(.purple)
+                        Label("Rapor / Dışa Aktar", systemImage: "square.and.arrow.up")
                     }
-                }
-
-                // MultiBlend export — only for saved formulas with a code
-                if formula != nil, !vm.code.isEmpty {
                     Button {
                         saveAction()           // ensure latest changes are saved first
                         showMultiBlendExport = true
                     } label: {
-                        Image(systemName: "rectangle.3.group.fill")
-                            .foregroundStyle(.indigo)
+                        Label("MultiBlend'e Aktar", systemImage: "rectangle.3.group.fill")
                     }
                 }
 
-                // Kombinasyonlar
                 Button { vm.showCombinations = true } label: {
-                    Image(systemName: "square.grid.3x3.topleft.filled")
-                        .foregroundStyle(.teal)
+                    Label("Kombinasyonlar", systemImage: "square.grid.3x3.topleft.filled")
                 }
                 .disabled(vm.ingredients.isEmpty)
 
-                Button {
-                    Task { await solveAction() }
-                } label: {
-                    if vm.isSolving {
-                        ProgressView().scaleEffect(0.8)
-                    } else {
-                        Label("Çöz", systemImage: "cpu")
-                            .labelStyle(.titleAndIcon)
-                    }
+                Button { showAssistant = true } label: {
+                    Label("AI Rasyon Asistanı", systemImage: "sparkles")
                 }
-                .disabled(vm.isSolving || vm.ingredients.filter(\.isActive).isEmpty)
-                .tint(.green)
-
-                Button("Kaydet") { saveAction() }
-                    .fontWeight(.semibold)
+                .disabled(vm.ingredients.isEmpty)
+            } label: {
+                Image(systemName: "ellipsis.circle")
             }
+        }
+
+        // Çöz — birincil aksiyon
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                Task { await solveAction() }
+            } label: {
+                if vm.isSolving {
+                    ProgressView().scaleEffect(0.8)
+                } else {
+                    Label("Çöz", systemImage: "cpu")
+                        .labelStyle(.titleAndIcon)
+                }
+            }
+            .disabled(vm.isSolving || vm.ingredients.filter(\.isActive).isEmpty)
+            .tint(.green)
+        }
+
+        // Kaydet — birincil aksiyon
+        ToolbarItem(placement: .primaryAction) {
+            Button("Kaydet") { saveAction() }
+                .fontWeight(.semibold)
         }
     }
 
@@ -1130,6 +1141,14 @@ struct FormulaEditorView: View {
         vm.previousCostPerTon = out.prevCost
         vm.isSolving          = false
         vm.selectedTab        = 2
+
+        // ── LP sonuçlarını hemen SwiftData'ya kaydet ─────────────────────
+        // Kullanıcı "Kaydet" basmadan gönderim yapsa bile sunucu çözüm
+        // değerlerini (mixPct toplamı = %100) görsün.
+        if let f = formula {
+            vm.applyToFormula(f)
+            try? modelContext.save()
+        }
     }
 
     // MARK: - TXT import

@@ -805,8 +805,8 @@ struct ProductPricingMetaSheet: View {
                                 ? "Logo Seç (Galeri veya Dosya)"
                                 : "Logoyu Değiştir"
                     ) { img in
-                        // Data olarak sakla — CloudKit ile senkronize edilir
-                        logoImageData = img.jpegData(compressionQuality: 0.85)
+                        // PNG saydamlığı korur (logo arka planı); JPEG'e sadece PNG yoksa düş
+                        logoImageData = img.pngData() ?? img.jpegData(compressionQuality: 0.90)
                         logoImagePath = ""
                         logoName      = ""
                     }

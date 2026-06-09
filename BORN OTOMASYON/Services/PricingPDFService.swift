@@ -109,6 +109,7 @@ struct PricingPDFService {
         nakliye:      Double, iscilik: Double, globalKarPct: Double,
         vade:         VadeConfig,
         period:       String,
+        revision:     String = "",
         extraItems:   [(value: Double, isPercent: Bool)] = []
     ) -> Data {
 
@@ -191,14 +192,14 @@ struct PricingPDFService {
                 // ── Antet görseli tam sayfa arka plan ──────────────────
                 antet.draw(in: CGRect(x: 0, y: 0, width: PW, height: PH))
                 curY = antetContentY
-                curY = drawInfoAndTitle(y: curY, period: period)
+                curY = drawInfoAndTitle(y: curY, period: period, revision: revision)
                 curY = drawTableHeader(y: curY, height: 22)
             } else {
                 // ── Programatik çizim (fallback) ───────────────────────
                 curY = drawBanner(y: curY)
                 curY = drawAddressBar(y: curY)
                 curY += 6
-                curY = drawInfoAndTitle(y: curY, period: period)
+                curY = drawInfoAndTitle(y: curY, period: period, revision: revision)
                 curY = drawTableHeader(y: curY, height: 22)
             }
 
@@ -396,7 +397,7 @@ struct PricingPDFService {
     // ────────────────────────────────────────────────────────────────────
 
     @discardableResult
-    private static func drawInfoAndTitle(y: CGFloat, period: String) -> CGFloat {
+    private static func drawInfoAndTitle(y: CGFloat, period: String, revision: String = "") -> CGFloat {
         var curY = y
 
         // Sağ: müşteri mektubu
@@ -416,6 +417,13 @@ struct PricingPDFService {
         drawT("Bilgilerinize sunar, hayırlı işler dileriz.",
               CGRect(x: rightX, y: curY + 19, width: rightW, height: 8),
               sz: 6.5, clr: UIColor(white: 0.28, alpha: 1))
+        // Revizyon — "Bilgilerinize sunar" satırının hemen altında, kalın
+        if !revision.trimmingCharacters(in: .whitespaces).isEmpty {
+            drawT("Revizyon No: \(revision)",
+                  CGRect(x: rightX, y: curY + 28, width: rightW, height: 8),
+                  sz: 6.5, bold: true, clr: navyDark)
+            curY += 9
+        }
 
         curY += 22
 
@@ -570,19 +578,29 @@ struct PricingPDFService {
                   sz: fSz, bold: true)
             x += C.urun
 
-            // Logo — nizami kutu içinde, ölçekli ve ortalı
+            // Logo — kutucuğa tam sığdır (aspect-fit), beyaz zemin, ince kenarlık
+            let pad: CGFloat = 1.5
+            let bx = x + pad;        let by = curY + pad
+            let bw = C.logo - pad*2; let bh = rowH  - pad*2
+            // Her durumda beyaz kutu + kenarlık çiz (logo olsun olmasın)
+            UIColor.white.setFill()
+            UIRectFill(CGRect(x: bx, y: by, width: bw, height: bh))
+            UIColor(white: 0.70, alpha: 0.8).setStroke()
+            let bp = UIBezierPath(rect: CGRect(x: bx, y: by, width: bw, height: bh))
+            bp.lineWidth = 0.4; bp.stroke()
             if let img = loadLogoImage(name: row.logoName, path: row.logoImagePath, data: row.logoImageData) {
-                let pad:  CGFloat = 1.5
-                let bx   = x + pad;         let by = curY + pad
-                let bw   = C.logo - pad*2;  let bh = rowH  - pad*2
-                UIColor.white.setFill(); UIRectFill(CGRect(x: bx, y: by, width: bw, height: bh))
-                UIColor(white: 0.70, alpha: 0.8).setStroke()
-                let bp = UIBezierPath(rect: CGRect(x: bx, y: by, width: bw, height: bh))
-                bp.lineWidth = 0.4; bp.stroke()
-                let ratio = img.size.width / img.size.height
-                var dw = bw - 2; var dh = dw / ratio
-                if dh > bh - 2 { dh = bh - 2; dw = dh * ratio }
-                img.draw(in: CGRect(x: bx + (bw - dw)/2, y: by + (bh - dh)/2, width: dw, height: dh))
+                // aspect-fit: en uzun kenar kutu içinde kalacak şekilde ölçekle
+                let iw = img.size.width, ih = img.size.height
+                guard iw > 0, ih > 0 else { break }
+                let availW = bw - 2, availH = bh - 2
+                let scale  = min(availW / iw, availH / ih)
+                let dw = iw * scale, dh = ih * scale
+                let drawRect = CGRect(
+                    x: bx + (bw - dw) / 2,
+                    y: by + (bh - dh) / 2,
+                    width: dw, height: dh
+                )
+                img.draw(in: drawRect)
             }
             x += C.logo
 
@@ -598,13 +616,13 @@ struct PricingPDFService {
                   sz: fSz, align: .center)
             x += C.protein
 
-            // Fiyatlar
+            // Fiyatlar — aynı punto, kalın
             let priceClr = UIColor(white: 0.08, alpha: 1)
             for (val, w) in [(pesin, C.pesin), (tekCekim, C.tekCekim),
                              (gun30, C.gun30), (gun60, C.gun60), (gun90, C.gun90)] {
                 drawT(priceFmt(val),
                       CGRect(x: x + 1, y: tY, width: w - 4, height: tH),
-                      sz: fSz, clr: priceClr, align: .right)
+                      sz: fSz, bold: true, clr: priceClr, align: .right)
                 x += w
             }
 

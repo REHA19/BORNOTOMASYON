@@ -1777,6 +1777,11 @@ private struct IngredientUsageDetailSheet: View {
                                     .frame(height: 5)
                                 }
                             }
+
+                            // Gölge Fiyat / Hassasiyet (Sensitivity) — son çözümden
+                            IngSensitivityRow(formula: item.formula,
+                                              ingCode: ingredient.code,
+                                              isUsed: item.isActive && item.mixPct > 0.001)
                         }
                         .padding(.vertical, 4)
                         .opacity(item.isActive ? 1.0 : 0.45)
@@ -1784,7 +1789,7 @@ private struct IngredientUsageDetailSheet: View {
                 } header: {
                     Text("Formüllerde Kullanım")
                 } footer: {
-                    Text("✓ = formülde aktif   +  = eklemek için dokun   MIN/MAX formüle özgü kısıtlardır.")
+                    Text("✓ = formülde aktif   +  = eklemek için dokun   MIN/MAX formüle özgü kısıtlardır.\n🛡 yeşil = fiyat artış toleransı (gölge fiyat)   ↓ turuncu = rasyona girmesi için gereken fiyat düşüşü (hassasiyet).")
                         .font(.caption2)
                 }
             }
@@ -1797,6 +1802,52 @@ private struct IngredientUsageDetailSheet: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Hammadde Gölge Fiyat / Hassasiyet (Sensitivity) satırı
+// Son LP çözümünden:
+//   • Rasyonda olan hammadde → costRangeIncrease: fiyatı ne kadar artarsa rasyonda kalır
+//   • Rasyonda olmayan hammadde → reducedCost: rasyona girmesi için fiyatı ne kadar düşmeli
+
+private struct IngSensitivityRow: View {
+    let formula: BlendFormula
+    let ingCode: String
+    let isUsed:  Bool
+
+    var body: some View {
+        if let solve = formula.lastSolve {
+            content(solve)
+        }
+    }
+
+    @ViewBuilder
+    private func content(_ solve: BFSolveResult) -> some View {
+        if isUsed {
+            if let inc = solve.costRangeIncreases[ingCode] {
+                if inc.isFinite, inc > 0 {
+                    label(icon: "shield.lefthalf.filled", color: .green,
+                          text: String(format: "Fiyatı +%.0f ₺/ton artana dek rasyonda kalır", inc))
+                } else if !inc.isFinite {
+                    label(icon: "shield.fill", color: .green,
+                          text: "Fiyat artışından etkilenmez (geniş tolerans)")
+                }
+            }
+        } else {
+            if let drop = solve.reducedCosts[ingCode], drop.isFinite, drop > 0 {
+                label(icon: "arrow.down.circle.fill", color: .orange,
+                      text: String(format: "Rasyona girmesi için fiyatı −%.0f ₺/ton düşmeli", drop))
+            }
+        }
+    }
+
+    private func label(icon: String, color: Color, text: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon).foregroundStyle(color).font(.caption)
+            Text(text).font(.caption).foregroundStyle(color)
+            Spacer()
+        }
+        .padding(.top, 2)
     }
 }
 
