@@ -170,7 +170,7 @@ struct FiyatDegisimRaporuView: View {
                 }
             } else if let o = row.oldPesin {
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(fmt(o)).font(.caption.monospacedDigit().strikethrough()).foregroundStyle(.secondary)
+                    Text(fmt(o)).font(.caption.monospacedDigit()).strikethrough().foregroundStyle(.secondary)
                     Text("ÇIKARILDI").font(.caption2.bold()).foregroundStyle(.gray)
                 }
             }

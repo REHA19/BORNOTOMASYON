@@ -18,7 +18,7 @@ struct SendFormulaSheet: View {
     @State private var sendResult:    SendOutcome?
 
     private var activeIngredients: [BFIngredient] {
-        formula.ingredients.filter { $0.isActive && $0.mixPct > 0.09 }
+        formula.ingredients.filter { $0.isActive && $0.mixPct > 0 }
     }
 
     private var hasSolve: Bool { formula.lastSolve?.isFeasible == true }
@@ -180,15 +180,17 @@ struct SendFormulaSheet: View {
     }
 
     private func buildModel() -> FormulaCreateAppModel {
+        let totalPct   = activeIngredients.reduce(0) { $0 + $1.mixPct }
+        let normFactor = totalPct > 0 ? 100.0 / totalPct : 1.0
         let details: [FormulaCreateDetailAppModel] = activeIngredients
-            .sorted { $0.mixPct > $1.mixPct }   // en yüksek miktar → RowNo 1
+            .sorted { $0.mixPct > $1.mixPct }
             .enumerated()
             .map { i, ing in
                 FormulaCreateDetailAppModel(
                     materialCode: ing.code,
                     materialName: ing.name,
                     rowNo:        i + 1,
-                    amount:       ing.mixPct / 100.0 * formula.totalKg,
+                    amount:       (ing.mixPct * normFactor) / 100.0 * 1000.0,
                     isAdditive:   false
                 )
             }
@@ -199,7 +201,7 @@ struct SendFormulaSheet: View {
             customName:    customName.trimmingCharacters(in: .whitespaces),
             customVersion: customVersion.trimmingCharacters(in: .whitespaces),
             validDate:     validDate,
-            totalAmount:   formula.totalKg,
+            totalAmount:   1000.0,
             comment:       comment.trimmingCharacters(in: .whitespaces),
             details:       details,
             activate:      activate
@@ -405,7 +407,7 @@ struct MultiBlendSendSheet: View {
         }
         let snaps: [FormSnap] = selectedFormulas.map { f in
             let cName = (customNames[f.code] ?? f.name).trimmingCharacters(in: .whitespaces)
-            let active = f.ingredients.filter { $0.isActive && $0.mixPct > 0.09 }
+            let active = f.ingredients.filter { $0.isActive && $0.mixPct > 0 }
             return FormSnap(
                 code: f.code, name: f.name, totalKg: f.totalKg, customName: cName,
                 ings: active.map { (code: $0.code, name: $0.name, mixPct: $0.mixPct) }
@@ -420,6 +422,8 @@ struct MultiBlendSendSheet: View {
         await withTaskGroup(of: (code: String, outcome: SendOutcome, customName: String).self) { grp in
             for snap in snaps {
                 grp.addTask {
+                    let totalPct   = snap.ings.reduce(0) { $0 + $1.mixPct }
+                    let normFactor = totalPct > 0 ? 100.0 / totalPct : 1.0
                     let details = snap.ings
                         .sorted { $0.mixPct > $1.mixPct }
                         .enumerated()
@@ -428,7 +432,7 @@ struct MultiBlendSendSheet: View {
                                 materialCode: ing.code,
                                 materialName: ing.name,
                                 rowNo:        i + 1,
-                                amount:       ing.mixPct / 100.0 * snap.totalKg,
+                                amount:       (ing.mixPct * normFactor) / 100.0 * 1000.0,
                                 isAdditive:   false
                             )
                         }
@@ -438,7 +442,7 @@ struct MultiBlendSendSheet: View {
                         customName:    snap.customName,
                         customVersion: trimVersion,
                         validDate:     vDate,
-                        totalAmount:   snap.totalKg,
+                        totalAmount:   1000.0,
                         comment:       trimComment,
                         details:       details,
                         activate:      act
@@ -479,7 +483,7 @@ struct MultiBlendSendSheet: View {
 
     private func saveRecord(formula: BlendFormula, customName: String,
                             customVersion: String, success: Bool, message: String) {
-        let active = formula.ingredients.filter { $0.isActive && $0.mixPct > 0.09 }
+        let active = formula.ingredients.filter { $0.isActive && $0.mixPct > 0 }
         let snaps  = active.map {
             SentIngredientSnap(code: $0.code, name: $0.name,
                                amountKg: $0.mixPct / 100.0 * formula.totalKg,

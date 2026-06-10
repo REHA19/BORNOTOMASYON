@@ -19,6 +19,7 @@ struct MaliyetlendirmeView: View {
     @State private var editTarget:       BlendFormula? = nil
     @State private var showFiyatListesi  = false
     @State private var showArchive       = false
+    @State private var showFiyatDegisim  = false
     @State private var showLabelEditor   = false
     @State private var showIskontoAnaliz = false
     @State private var showAddGider      = false
@@ -170,6 +171,9 @@ struct MaliyetlendirmeView: View {
                             Button { showArchive = true } label: {
                                 Label("Arşiv", systemImage: "clock.arrow.circlepath")
                             }
+                            Button { showFiyatDegisim = true } label: {
+                                Label("Fiyat Değişim Raporu", systemImage: "chart.line.uptrend.xyaxis")
+                            }
                         } label: {
                             Image(systemName: "ellipsis.circle")
                         }
@@ -231,6 +235,9 @@ struct MaliyetlendirmeView: View {
             }
             .navigationDestination(isPresented: $showArchive) {
                 PriceListArchiveView(brand: selectedBrand)
+            }
+            .navigationDestination(isPresented: $showFiyatDegisim) {
+                FiyatDegisimRaporuView(brand: selectedBrand)
             }
         }
     }

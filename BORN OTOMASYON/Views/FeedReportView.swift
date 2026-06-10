@@ -51,6 +51,9 @@ struct FeedReportView: View {
     @State private var shareURL:      URL?        = nil
     @State private var showShare                  = false
     @State private var isExporting                = false
+    @State private var showSettings               = false
+
+    @ObservedObject private var settings = ReportSettings.shared
 
     enum ReportType: String, CaseIterable {
         case ingredient = "Hammadde"
@@ -76,7 +79,7 @@ struct FeedReportView: View {
                 }
             }
         }
-        return usageMap.compactMap { (code, tons) -> IngRow? in
+        let rows = usageMap.compactMap { (code, tons) -> IngRow? in
             guard tons > 0.001 else { return nil }
             let libIng = library.first { $0.code == code }
             return IngRow(id: code, code: code,
@@ -84,7 +87,11 @@ struct FeedReportView: View {
                           usageTons: tons,
                           priceTLPerTon: libIng?.priceTL)
         }
-        .sorted { $0.usageTons > $1.usageTons }
+        switch settings.sortSharedBy {
+        case .usageDesc:    return rows.sorted { $0.usageTons > $1.usageTons }
+        case .usageAsc:     return rows.sorted { $0.usageTons < $1.usageTons }
+        case .alphabetical: return rows.sorted { $0.name < $1.name }
+        }
     }
 
     private var feedRows: [FeedRow] {
@@ -95,14 +102,18 @@ struct FeedReportView: View {
                 tonsMap[fCode, default: 0] += prodTons[fCode] ?? 0
             }
         }
-        return tonsMap.compactMap { (code, tons) -> FeedRow? in
+        let rows = tonsMap.compactMap { (code, tons) -> FeedRow? in
             guard tons > 0.001 else { return nil }
             guard let formula = allFormulas.first(where: { $0.code == code }) else { return nil }
             let cost = formula.lastSolve?.costPerTon ?? formula.recordedCostTL
             return FeedRow(id: code, code: code, name: formula.name,
                            tonsMes: tons, costPerTon: cost)
         }
-        .sorted { $0.tonsMes > $1.tonsMes }
+        switch settings.sortFormulaBy {
+        case .usageDesc:    return rows.sorted { $0.tonsMes > $1.tonsMes }
+        case .usageAsc:     return rows.sorted { $0.tonsMes < $1.tonsMes }
+        case .alphabetical: return rows.sorted { $0.name < $1.name }
+        }
     }
 
     private var activeIds: [String] {
@@ -129,8 +140,36 @@ struct FeedReportView: View {
                     ForEach(ReportType.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
-                .padding(.horizontal, 16).padding(.vertical, 10)
+                .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 4)
                 .background(Color(.systemGroupedBackground))
+
+                // Aktif sıralama göstergesi
+                Button { showSettings = true } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: sortIcon)
+                            .font(.caption.bold())
+                            .foregroundStyle(.white)
+                            .frame(width: 28, height: 28)
+                            .background(Color.blue.gradient, in: RoundedRectangle(cornerRadius: 7))
+                        Text(sortLabel)
+                            .font(.caption.bold())
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Text("Ayarlar")
+                            .font(.caption2)
+                            .foregroundStyle(.blue)
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(.blue)
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .overlay(
+                        Rectangle().frame(height: 0.5).foregroundStyle(Color(.separator)),
+                        alignment: .bottom
+                    )
+                }
+                .buttonStyle(.plain)
 
                 switch reportType {
                 case .ingredient: ingredientListView
@@ -149,6 +188,9 @@ struct FeedReportView: View {
                     .ignoresSafeArea()
             }
         }
+        .sheet(isPresented: $showSettings) {
+            ReportSettingsView(availableNutrients: [])
+        }
     }
 
     // MARK: - Toolbar
@@ -165,9 +207,7 @@ struct FeedReportView: View {
         }
         ToolbarItem(placement: .primaryAction) {
             if isExporting {
-                ProgressView()
-                    .progressViewStyle(.circular)
-                    .scaleEffect(0.85)
+                ProgressView().progressViewStyle(.circular).scaleEffect(0.85)
             } else {
                 Menu {
                     Button { Task { await export(.pdf) } } label: {
@@ -180,9 +220,14 @@ struct FeedReportView: View {
                         Label("TXT", systemImage: "doc.plaintext")
                     }
                 } label: {
-                    Label("Paylaş", systemImage: "square.and.arrow.up")
+                    Image(systemName: "square.and.arrow.up")
                 }
                 .disabled(selectedCodes.isEmpty || activeIds.isEmpty)
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Button { showSettings = true } label: {
+                Image(systemName: "slider.horizontal.3")
             }
         }
     }
@@ -568,6 +613,23 @@ struct FeedReportView: View {
     }
 
     // MARK: - Helpers
+
+    private var sortIcon: String {
+        switch reportType == .ingredient ? settings.sortSharedBy : settings.sortFormulaBy {
+        case .usageDesc:    return "arrow.down.circle.fill"
+        case .usageAsc:     return "arrow.up.circle.fill"
+        case .alphabetical: return "textformat.abc"
+        }
+    }
+
+    private var sortLabel: String {
+        let s = reportType == .ingredient ? settings.sortSharedBy : settings.sortFormulaBy
+        switch s {
+        case .usageDesc:    return "Kullanım miktarı: Büyükten Küçüğe"
+        case .usageAsc:     return "Kullanım miktarı: Küçükten Büyüğe"
+        case .alphabetical: return "Alfabetik (A–Z)"
+        }
+    }
 
     private func toggle(_ id: String) {
         if selectedCodes.contains(id) { selectedCodes.remove(id) }
