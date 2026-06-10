@@ -32,11 +32,25 @@ struct PriceListArchiveView: View {
                             .foregroundStyle(.orange)
 
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(archive.displayDate)
-                                .font(.subheadline.bold())
-                            if !archive.period.isEmpty {
-                                Text(archive.period)
-                                    .font(.caption).foregroundStyle(.secondary)
+                            HStack(spacing: 6) {
+                                Text(archive.displayDate)
+                                    .font(.subheadline.bold())
+                                if archive.isPublished {
+                                    Text("YAYINDA")
+                                        .font(.caption2.bold()).foregroundStyle(.white)
+                                        .padding(.horizontal, 5).padding(.vertical, 1)
+                                        .background(.green, in: Capsule())
+                                }
+                            }
+                            HStack(spacing: 6) {
+                                if !archive.revision.isEmpty {
+                                    Text("Rev: \(archive.revision)")
+                                        .font(.caption).foregroundStyle(.orange)
+                                }
+                                if !archive.period.isEmpty {
+                                    Text(archive.period)
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
                             }
                             Text(archive.fileName)
                                 .font(.caption2)

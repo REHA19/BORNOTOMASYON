@@ -158,6 +158,7 @@ struct MultiBlendDetailView: View {
     }
     @State private var solverPulse       = false   // yanıp-sönme animasyonu
     @State private var selectedIngUsage: CombinedIng?         = nil
+    @State private var showIngAdder      = false
     @State private var showRenameAlert   = false
     @State private var renameText        = ""
     /// Hesaplama öncesi her hammaddenin aylık ton değeri — delta gösterimi için
@@ -442,6 +443,9 @@ struct MultiBlendDetailView: View {
                 groupFormulas:  groupFormulas,
                 productionTons: group.productionTons
             )
+        }
+        .sheet(isPresented: $showIngAdder, onDismiss: refreshCombinedIngs) {
+            MultiBlendIngAddSheet(groupFormulas: groupFormulas, library: library)
         }
         .sheet(item: $editingIngredient) { ing in
             EditIngredientView(ingredient: ing)
@@ -801,12 +805,19 @@ struct MultiBlendDetailView: View {
                 }
             }
         } header: {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Ortak Hammadde Listesi (\(items.count))")
-                if totalProductionTons > 0 {
-                    Text(String(format: "Toplam üretim: %.1f ton/ay", totalProductionTons))
-                        .font(.caption2).foregroundStyle(.secondary)
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Ortak Hammadde Listesi (\(items.count))")
+                    if totalProductionTons > 0 {
+                        Text(String(format: "Toplam üretim: %.1f ton/ay", totalProductionTons))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
+                Spacer()
+                Button { showIngAdder = true } label: {
+                    Image(systemName: "plus.circle").font(.callout)
+                }
+                .buttonStyle(.borderless)
             }
         }
     }
@@ -1941,6 +1952,215 @@ private struct FormulaIngConstraintRow: View {
 }
 
 // MARK: - Formula picker sheet
+
+// MARK: - Kütüphaneden hammadde seç + formül bazlı yapılandır
+
+private struct MultiBlendIngAddSheet: View {
+    @Environment(\.modelContext) private var context
+    @Environment(\.dismiss)      private var dismiss
+
+    let groupFormulas: [BlendFormula]
+    let library: [FeedIngredient]
+
+    // Hammadde seçimi
+    @State private var search: String = ""
+    @State private var selectedFeed: FeedIngredient? = nil
+
+    // Her formül kodu için: aktif mi, min%, max%
+    @State private var perFormula: [String: (active: Bool, min: String, max: String)] = [:]
+
+    private var filtered: [FeedIngredient] {
+        if search.isEmpty { return library.sorted { $0.name < $1.name } }
+        let q = search.lowercased()
+        return library.filter {
+            $0.name.lowercased().contains(q) || $0.code.lowercased().contains(q)
+        }.sorted { $0.name < $1.name }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                // ── Bölüm 1: Kütüphane Seçici ────────────────────────
+                Section {
+                    // Arama kutusu
+                    TextField("Hammadde ara (ad veya kod)…", text: $search)
+                        .textInputAutocapitalization(.never)
+
+                    if let sel = selectedFeed {
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(sel.name).font(.subheadline.bold()).foregroundStyle(.orange)
+                                Text(sel.code).font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Değiştir") { selectedFeed = nil; perFormula = [:] }
+                                .font(.caption).buttonStyle(.borderless).foregroundStyle(.blue)
+                        }
+                    } else {
+                        ForEach(filtered) { feed in
+                            Button {
+                                selectedFeed = feed
+                                buildPerFormula(for: feed)
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(feed.name).font(.subheadline)
+                                        Text(feed.code).font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if let p = feed.priceTL, p > 0 {
+                                        Text(String(format: "%.0f ₺/ton", p))
+                                            .font(.caption.monospacedDigit())
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                } header: {
+                    Text("Hammadde Seç")
+                }
+
+                // ── Bölüm 2: Formül Bazlı Yapılandırma ────────────────
+                if selectedFeed != nil {
+                    Section {
+                        ForEach(groupFormulas) { formula in
+                            formulaRow(formula)
+                        }
+                    } header: {
+                        Text("Formüllerde Kullanım")
+                    } footer: {
+                        Text("Toggle açıkken LP çözümünde bu hammadde o formüle dahil edilir. Min%/Max% formüle özgü kısıtlardır.")
+                            .font(.caption2)
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("Hammadde Ekle")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("İptal") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Kaydet") { save(); dismiss() }
+                        .fontWeight(.semibold)
+                        .disabled(selectedFeed == nil)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func formulaRow(_ formula: BlendFormula) -> some View {
+        let code = formula.code
+        let cfg  = Binding<(active: Bool, min: String, max: String)>(
+            get: { perFormula[code] ?? (false, "0", "100") },
+            set: { perFormula[code] = $0 }
+        )
+
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: Binding(get: { cfg.wrappedValue.active },
+                                 set: { cfg.wrappedValue.active = $0 })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(formula.name).font(.subheadline.bold()).lineLimit(1)
+                    Text(formula.code).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+
+            if cfg.wrappedValue.active {
+                HStack(spacing: 16) {
+                    // Min%
+                    HStack(spacing: 4) {
+                        Text("Min%").font(.caption).foregroundStyle(.secondary)
+                        TextField("0", text: Binding(
+                            get: { cfg.wrappedValue.min },
+                            set: { cfg.wrappedValue.min = $0 }
+                        ))
+                        .keyboardType(.decimalPad)
+                        .frame(width: 64)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.subheadline.monospacedDigit())
+                    }
+                    // Max%
+                    HStack(spacing: 4) {
+                        Text("Max%").font(.caption).foregroundStyle(.secondary)
+                        TextField("100", text: Binding(
+                            get: { cfg.wrappedValue.max },
+                            set: { cfg.wrappedValue.max = $0 }
+                        ))
+                        .keyboardType(.decimalPad)
+                        .frame(width: 64)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.subheadline.monospacedDigit())
+                    }
+                }
+                .padding(.leading, 4)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// Hammadde seçilince her formül için mevcut değerleri ya da varsayılanları yükle
+    private func buildPerFormula(for feed: FeedIngredient) {
+        perFormula = [:]
+        for formula in groupFormulas {
+            if let existing = formula.ingredients.first(where: { $0.code == feed.code }) {
+                perFormula[formula.code] = (
+                    active: true,
+                    min: String(format: "%g", existing.minPct),
+                    max: String(format: "%g", existing.maxPct)
+                )
+            } else {
+                perFormula[formula.code] = (active: false, min: "0", max: "100")
+            }
+        }
+    }
+
+    private func save() {
+        guard let feed = selectedFeed else { return }
+        for formula in groupFormulas {
+            guard let cfg = perFormula[formula.code] else { continue }
+            let minVal = Double(cfg.min.replacingOccurrences(of: ",", with: ".")) ?? 0
+            let maxVal = Double(cfg.max.replacingOccurrences(of: ",", with: ".")) ?? 100
+            var ings = formula.ingredients
+            if let idx = ings.firstIndex(where: { $0.code == feed.code }) {
+                if cfg.active {
+                    // Mevcut → min/max güncelle
+                    ings[idx].minPct = minVal
+                    ings[idx].maxPct = max(minVal, maxVal)
+                    ings[idx].isActive  = true
+                    ings[idx].hasStock  = true
+                } else {
+                    // Toggle kapatıldıysa formülden çıkar
+                    ings.remove(at: idx)
+                }
+            } else if cfg.active {
+                // Yeni → BFIngredient oluştur
+                ings.append(BFIngredient(
+                    id:                    UUID(),
+                    code:                  feed.code,
+                    name:                  feed.name,
+                    isActive:              true,
+                    hasStock:              feed.isAvailable,
+                    minPct:                minVal,
+                    maxPct:                max(minVal, maxVal),
+                    mixPct:                0,
+                    productionMixPct:      0,
+                    previousMixPct:        0,
+                    overridePriceTLPerTon: (feed.priceTL ?? 0) > 0 ? feed.priceTL : nil
+                ))
+            }
+            formula.ingredients = ings
+            formula.updatedAt   = Date()
+        }
+        try? context.save()
+    }
+}
+
+// MARK: - Formüle formül seçici
 
 private struct MultiBlendFormulaPickerSheet: View {
     @Environment(\.modelContext) private var context
