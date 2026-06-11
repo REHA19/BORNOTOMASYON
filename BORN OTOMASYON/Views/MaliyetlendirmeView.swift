@@ -18,6 +18,7 @@ struct MaliyetlendirmeView: View {
     @State private var showSettings      = false
     @State private var editTarget:       BlendFormula? = nil
     @State private var nutrientTarget:   BlendFormula? = nil
+    @State private var tapWorkItem:      DispatchWorkItem? = nil
     @State private var showFiyatListesi  = false
     @State private var showArchive       = false
     @State private var showFiyatDegisim  = false
@@ -131,10 +132,17 @@ struct MaliyetlendirmeView: View {
                                 extraItems: extraItems
                             )
                             .contentShape(Rectangle())
-                            .gesture(
-                                TapGesture(count: 2).onEnded { nutrientTarget = row.formula }
-                                    .exclusively(before: TapGesture(count: 1).onEnded { editTarget = row.formula })
-                            )
+                            .onTapGesture(count: 2) {
+                                tapWorkItem?.cancel()
+                                tapWorkItem = nil
+                                nutrientTarget = row.formula
+                            }
+                            .onTapGesture(count: 1) {
+                                let formula = row.formula
+                                let work = DispatchWorkItem { editTarget = formula }
+                                tapWorkItem = work
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+                            }
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 ForEach(brands.filter { $0 != selectedBrand }, id: \.self) { hedef in
                                     Button {
