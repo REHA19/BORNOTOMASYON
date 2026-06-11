@@ -131,8 +131,10 @@ struct MaliyetlendirmeView: View {
                                 extraItems: extraItems
                             )
                             .contentShape(Rectangle())
-                            .onTapGesture(count: 2) { nutrientTarget = row.formula }
-                            .onTapGesture(count: 1) { editTarget = row.formula }
+                            .gesture(
+                                TapGesture(count: 2).onEnded { nutrientTarget = row.formula }
+                                    .exclusively(before: TapGesture(count: 1).onEnded { editTarget = row.formula })
+                            )
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 ForEach(brands.filter { $0 != selectedBrand }, id: \.self) { hedef in
                                     Button {
