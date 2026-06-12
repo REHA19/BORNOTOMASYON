@@ -50,6 +50,9 @@ struct BornOtomasyonApp: App {
         GiderKalemi.self,
         FormulaCostEntry.self,
         PriceListArchive.self,
+        StokManuelKalem.self,
+        StokKategori.self,
+        StokAylikRapor.self,
     ]
 
     private static func makeContainer() -> ModelContainer {

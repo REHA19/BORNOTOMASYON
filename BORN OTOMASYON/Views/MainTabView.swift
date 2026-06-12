@@ -29,6 +29,7 @@ private let allMenuItems: [MenuItem] = [
     MenuItem(tag: 15, title: "Yem Rapor",    icon: "doc.text.fill",                   color: .green),
     MenuItem(tag: 16, title: "LP Analizi",   icon: "waveform.path.ecg.rectangle.fill", color: .purple),
     MenuItem(tag: 17, title: "Maliyet",     icon: "chart.bar.doc.horizontal.fill",    color: .yellow),
+    MenuItem(tag: 18, title: "Stok Mal.",  icon: "shippingbox.and.arrow.backward.fill", color: .mint),
 ]
 
 @ViewBuilder
@@ -50,6 +51,7 @@ private func destinationView(for tag: Int) -> some View {
     case 15: FeedReportView()
     case 16: LPAnalysisMenuView()
     case 17: MaliyetlendirmeView()
+    case 18: StokMaliyetiView()
     default: MaterialListView()
     }
 }

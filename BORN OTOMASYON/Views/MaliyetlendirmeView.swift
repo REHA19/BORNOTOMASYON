@@ -17,6 +17,7 @@ struct MaliyetlendirmeView: View {
 
     @State private var showSettings      = false
     @State private var editTarget:       BlendFormula? = nil
+    @State private var nutrientTarget:   BlendFormula? = nil
     @State private var showFiyatListesi  = false
     @State private var showArchive       = false
     @State private var showFiyatDegisim  = false
@@ -131,6 +132,20 @@ struct MaliyetlendirmeView: View {
                             )
                             .contentShape(Rectangle())
                             .onTapGesture { editTarget = row.formula }
+                            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                Button { nutrientTarget = row.formula } label: {
+                                    Label("İçerik & Besinler", systemImage: "chart.bar.doc.horizontal")
+                                }
+                                .tint(.indigo)
+                            }
+                            .contextMenu {
+                                Button { nutrientTarget = row.formula } label: {
+                                    Label("İçerik & Besin Değerleri", systemImage: "chart.bar.doc.horizontal")
+                                }
+                                Button { editTarget = row.formula } label: {
+                                    Label("Düzenle", systemImage: "pencil")
+                                }
+                            }
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 ForEach(brands.filter { $0 != selectedBrand }, id: \.self) { hedef in
                                     Button {
@@ -232,6 +247,9 @@ struct MaliyetlendirmeView: View {
             }
             .sheet(isPresented: $showKatYonetim) {
                 KategoriYonetimView(brand: selectedBrand)
+            }
+            .sheet(item: $nutrientTarget) { formula in
+                FormulaContentSheet(formula: formula)
             }
             .navigationDestination(isPresented: $showArchive) {
                 PriceListArchiveView(brand: selectedBrand)
@@ -905,4 +923,163 @@ struct ProductPricingMetaSheet: View {
         return nil
     }
 
+}
+
+// MARK: - Formül İçerik & Besin Değerleri Sheet'i
+
+struct FormulaContentSheet: View {
+    let formula: BlendFormula
+    @Environment(\.dismiss) private var dismiss
+
+    private var activeIngredients: [BFIngredient] {
+        formula.ingredients
+            .filter { $0.isActive && $0.mixPct > 0.001 }
+            .sorted { $0.mixPct > $1.mixPct }
+    }
+
+    private var nutrientRows: [(name: String, unit: String, value: Double)] {
+        guard let solve = formula.lastSolve else { return [] }
+        return allNutrientDefs.compactMap { def in
+            guard let v = solve.nutrientValues[def.key], v > 0.0001 else { return nil }
+            return (name: def.displayName, unit: def.unit, value: v)
+        }
+    }
+
+    private func pctFmt(_ v: Double) -> String { String(format: "%.2f%%", v) }
+    private func numFmt(_ v: Double, unit: String) -> String {
+        unit.lowercased().contains("kcal") ? String(format: "%.0f", v) : String(format: "%.2f", v)
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                // ── Çözüm özeti ───────────────────────────────────────────
+                if let solve = formula.lastSolve {
+                    Section {
+                        let dateFmt: DateFormatter = {
+                            let f = DateFormatter()
+                            f.locale = Locale(identifier: "tr_TR")
+                            f.dateFormat = "d MMM yyyy HH:mm"
+                            return f
+                        }()
+                        LabeledContent("Son Çözüm", value: dateFmt.string(from: solve.solvedAt))
+                        LabeledContent("Rasyon Maliyeti") {
+                            Text(String(format: "%.2f ₺/ton", solve.costPerTon))
+                                .foregroundStyle(.orange).fontWeight(.semibold)
+                        }
+                        LabeledContent("Durum") {
+                            Label(solve.isFeasible ? "Uygun Çözüm" : "Uygun Değil",
+                                  systemImage: solve.isFeasible ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                .foregroundStyle(solve.isFeasible ? .green : .red)
+                        }
+                    } header: { Text("Çözüm Bilgisi") }
+                }
+
+                // ── İçerik (hammaddeler) ──────────────────────────────────
+                Section {
+                    if activeIngredients.isEmpty {
+                        Text("Henüz çözüm yapılmamış veya hammadde bulunamadı.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(activeIngredients) { ing in
+                            HStack(spacing: 8) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(ing.name).font(.subheadline)
+                                    Text(ing.code).font(.caption2).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                VStack(alignment: .trailing, spacing: 2) {
+                                    Text(pctFmt(ing.mixPct))
+                                        .font(.subheadline.bold().monospacedDigit())
+                                        .foregroundStyle(.indigo)
+                                    let kg = ing.mixPct / 100.0 * formula.totalKg
+                                    Text(String(format: "%.0f kg/ton", kg))
+                                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                                }
+                            }
+                            .padding(.vertical, 1)
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text("Formül İçeriği — \(activeIngredients.count) Hammadde")
+                        Spacer()
+                        Text(String(format: "%.2f%%", activeIngredients.reduce(0) { $0 + $1.mixPct }))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+
+                // ── Besin Değerleri ───────────────────────────────────────
+                if !nutrientRows.isEmpty {
+                    Section {
+                        ForEach(nutrientRows, id: \.name) { row in
+                            HStack {
+                                Text(row.name).font(.subheadline)
+                                Spacer()
+                                Text(numFmt(row.value, unit: row.unit))
+                                    .font(.subheadline.monospacedDigit())
+                                if !row.unit.isEmpty {
+                                    Text(row.unit)
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                        .frame(minWidth: 50, alignment: .leading)
+                                }
+                            }
+                        }
+                    } header: { Text("Besin Değerleri") }
+                } else if formula.lastSolve != nil {
+                    Section {
+                        Text("Bu formül için besin değeri kaydı bulunamadı.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } header: { Text("Besin Değerleri") }
+                }
+
+                // ── Kısıtlar ─────────────────────────────────────────────
+                let shownConstraints = formula.constraints.filter { $0.isActive && $0.showInResult }
+                if !shownConstraints.isEmpty {
+                    Section {
+                        ForEach(shownConstraints) { con in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(con.resolvedDisplayName).font(.subheadline)
+                                    HStack(spacing: 6) {
+                                        if let mn = con.minValue {
+                                            Text("min: \(String(format: "%.2f", mn))")
+                                                .font(.caption2).foregroundStyle(.blue)
+                                        }
+                                        if let mx = con.maxValue {
+                                            Text("max: \(String(format: "%.2f", mx))")
+                                                .font(.caption2).foregroundStyle(.orange)
+                                        }
+                                    }
+                                }
+                                Spacer()
+                                if let curr = con.currentValue {
+                                    Text(String(format: "%.2f", curr))
+                                        .font(.subheadline.bold().monospacedDigit())
+                                        .foregroundStyle(constraintColor(con))
+                                    Text(con.unit).font(.caption2).foregroundStyle(.secondary)
+                                }
+                            }
+                            .padding(.vertical, 1)
+                        }
+                    } header: { Text("Besin Kısıtları") }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle(formula.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Kapat") { dismiss() }.fontWeight(.semibold)
+                }
+            }
+        }
+    }
+
+    private func constraintColor(_ con: BFConstraint) -> Color {
+        guard let curr = con.currentValue else { return .primary }
+        if let mn = con.minValue, curr < mn - 0.01 { return .red }
+        if let mx = con.maxValue, curr > mx + 0.01 { return .red }
+        return .green
+    }
 }
