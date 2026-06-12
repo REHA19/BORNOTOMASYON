@@ -133,18 +133,12 @@ struct MaliyetlendirmeView: View {
                             .contentShape(Rectangle())
                             .onTapGesture { editTarget = row.formula }
                             .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                                Button { nutrientTarget = row.formula } label: {
+                                Button {
+                                    nutrientTarget = row.formula
+                                } label: {
                                     Label("İçerik & Besinler", systemImage: "chart.bar.doc.horizontal")
                                 }
                                 .tint(.indigo)
-                            }
-                            .contextMenu {
-                                Button { nutrientTarget = row.formula } label: {
-                                    Label("İçerik & Besin Değerleri", systemImage: "chart.bar.doc.horizontal")
-                                }
-                                Button { editTarget = row.formula } label: {
-                                    Label("Düzenle", systemImage: "pencil")
-                                }
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 ForEach(brands.filter { $0 != selectedBrand }, id: \.self) { hedef in
@@ -925,7 +919,7 @@ struct ProductPricingMetaSheet: View {
 
 }
 
-// MARK: - Formül İçerik & Besin Değerleri Sheet'i
+// MARK: - Formül İçerik & Besin Değerleri Sheet'i (çift tıklamayla açılır)
 
 struct FormulaContentSheet: View {
     let formula: BlendFormula
@@ -956,12 +950,8 @@ struct FormulaContentSheet: View {
                 // ── Çözüm özeti ───────────────────────────────────────────
                 if let solve = formula.lastSolve {
                     Section {
-                        let dateFmt: DateFormatter = {
-                            let f = DateFormatter()
-                            f.locale = Locale(identifier: "tr_TR")
-                            f.dateFormat = "d MMM yyyy HH:mm"
-                            return f
-                        }()
+                        let dateFmt = DateFormatter()
+                        let _ = { dateFmt.locale = Locale(identifier: "tr_TR"); dateFmt.dateFormat = "d MMM yyyy HH:mm" }()
                         LabeledContent("Son Çözüm", value: dateFmt.string(from: solve.solvedAt))
                         LabeledContent("Rasyon Maliyeti") {
                             Text(String(format: "%.2f ₺/ton", solve.costPerTon))
@@ -996,15 +986,22 @@ struct FormulaContentSheet: View {
                                     Text(String(format: "%.0f kg/ton", kg))
                                         .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                                 }
+                                if ing.minPct > 0 && abs(ing.mixPct - ing.minPct) < 0.05 {
+                                    Image(systemName: "arrow.down.to.line")
+                                        .font(.caption2).foregroundStyle(.orange)
+                                } else if ing.maxPct < 100 && abs(ing.mixPct - ing.maxPct) < 0.05 {
+                                    Image(systemName: "arrow.up.to.line")
+                                        .font(.caption2).foregroundStyle(.red)
+                                }
                             }
                             .padding(.vertical, 1)
                         }
                     }
                 } header: {
                     HStack {
-                        Text("Formül İçeriği — \(activeIngredients.count) Hammadde")
+                        Text("İçerik — \(activeIngredients.count) Hammadde")
                         Spacer()
-                        Text(String(format: "%.2f%%", activeIngredients.reduce(0) { $0 + $1.mixPct }))
+                        Text(String(format: "Toplam: %.2f%%", activeIngredients.reduce(0) { $0 + $1.mixPct }))
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
