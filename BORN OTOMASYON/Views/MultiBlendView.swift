@@ -690,25 +690,25 @@ struct MultiBlendDetailView: View {
                     }
                 }
             }
-            // Hammadde değişimi — giren/çıkan/değişen TÜM hammaddeler (previousMixPct > 0 koşulu kaldırıldı)
-            if solveResults[formula.code] != nil {
+            // Hammadde değişimi — son "Üretime Kaydet" ile şimdiki durum arasındaki fark
+            // Her zaman gösterilir (oturumda Hesapla basılmasa bile), baseline = productionMixPct
+            if group.hasProductionSnapshot {
                 let changes = formula.ingredients
-                    .filter { abs($0.mixPct - $0.previousMixPct) >= 0.5 }
+                    .filter { abs($0.mixPct - $0.productionMixPct) >= 0.5 }
                     .sorted { lhs, rhs in
-                        let ld = lhs.mixPct - lhs.previousMixPct
-                        let rd = rhs.mixPct - rhs.previousMixPct
+                        let ld = lhs.mixPct - lhs.productionMixPct
+                        let rd = rhs.mixPct - rhs.productionMixPct
                         if (ld > 0) != (rd > 0) { return ld > 0 }  // artanlar önce
                         return abs(ld) > abs(rd)
                     }
                 if !changes.isEmpty {
-                    // Denge: artan kg toplamı = azalan kg toplamı (LP garantisi)
-                    let inKg  = changes.filter { $0.mixPct > $0.previousMixPct }
-                                       .reduce(0.0) { $0 + ($1.mixPct - $1.previousMixPct) / 100.0 * formula.totalKg }
-                    let outKg = changes.filter { $0.mixPct < $0.previousMixPct }
-                                       .reduce(0.0) { $0 + ($1.previousMixPct - $1.mixPct) / 100.0 * formula.totalKg }
+                    let inKg  = changes.filter { $0.mixPct > $0.productionMixPct }
+                                       .reduce(0.0) { $0 + ($1.mixPct - $1.productionMixPct) / 100.0 * formula.totalKg }
+                    let outKg = changes.filter { $0.mixPct < $0.productionMixPct }
+                                       .reduce(0.0) { $0 + ($1.productionMixPct - $1.mixPct) / 100.0 * formula.totalKg }
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(Array(changes), id: \.id) { ing in
-                            let diffPct = ing.mixPct - ing.previousMixPct
+                            let diffPct = ing.mixPct - ing.productionMixPct
                             let diffKg  = diffPct / 100.0 * formula.totalKg
                             HStack(spacing: 3) {
                                 Image(systemName: diffPct > 0 ? "arrow.up" : "arrow.down")
@@ -719,7 +719,7 @@ struct MultiBlendDetailView: View {
                             }
                             .foregroundStyle(diffPct > 0 ? .green : .red)
                         }
-                        // Denge özeti — giren ve çıkan kg'lar eşit olmalı
+                        // Denge özeti
                         if inKg > 0.5 || outKg > 0.5 {
                             HStack(spacing: 4) {
                                 Image(systemName: abs(inKg - outKg) < 1.0
