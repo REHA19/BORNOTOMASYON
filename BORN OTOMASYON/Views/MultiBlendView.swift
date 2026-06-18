@@ -149,6 +149,7 @@ struct MultiBlendDetailView: View {
     @State private var costHistoryFormula:    BlendFormula?         = nil
     @State private var nutrientCompFormula:   BlendFormula?         = nil
     @State private var priceHistoryIngredient: FeedIngredient?      = nil
+    @State private var showGroupLP              = false
 
     enum FormulaSort: String, CaseIterable {
         case tonDesc  = "Tonaj ↓"
@@ -333,15 +334,6 @@ struct MultiBlendDetailView: View {
         .listStyle(.insetGrouped)
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 10) {
-                // ── Kaydet ──────────────────────────────────────────────────
-                Button { try? context.save() } label: {
-                    Text("Kaydet")
-                        .font(.subheadline.bold()).foregroundStyle(.white)
-                        .padding(.horizontal, 18).padding(.vertical, 13)
-                        .frame(maxWidth: .infinity)
-                        .background(Color.blue, in: Capsule())
-                        .shadow(color: .blue.opacity(0.4), radius: 8)
-                }
                 // ── Hesapla ──────────────────────────────────────────────────
                 Button { Task { await calculateAll() } } label: {
                     HStack(spacing: 6) {
@@ -446,6 +438,9 @@ struct MultiBlendDetailView: View {
         }
         .sheet(isPresented: $showIngAdder, onDismiss: refreshCombinedIngs) {
             MultiBlendIngAddSheet(groupFormulas: groupFormulas, library: library)
+        }
+        .sheet(isPresented: $showGroupLP) {
+            MultiBlendGroupLPSheet(group: group, groupFormulas: groupFormulas, library: library)
         }
         .sheet(item: $editingIngredient) { ing in
             EditIngredientView(ingredient: ing)
@@ -814,6 +809,12 @@ struct MultiBlendDetailView: View {
                     }
                 }
                 Spacer()
+                Button {
+                    showGroupLP = true
+                } label: {
+                    Image(systemName: "function").font(.callout)
+                }
+                .buttonStyle(.borderless)
                 Button { showIngAdder = true } label: {
                     Image(systemName: "plus.circle").font(.callout)
                 }
@@ -1022,6 +1023,12 @@ struct MultiBlendDetailView: View {
         group.productionSnapshot     = snap
         group.productionSnapshotTons = snapTons
         group.productionSnapshotAt   = Date()
+        // Sonraki hesaplamalar bu anı baseline olarak kullanır
+        for formula in groupFormulas {
+            var ings = formula.ingredients
+            for i in ings.indices { ings[i].productionMixPct = ings[i].mixPct }
+            formula.ingredients = ings
+        }
         try? context.save()
     }
 
@@ -1308,8 +1315,10 @@ struct MultiBlendDetailView: View {
             var finalIngs  = out.resultIngs
             for i in finalIngs.indices {
                 if let orig = origByCode[finalIngs[i].code] {
-                    finalIngs[i].minPct = orig.minPct
-                    finalIngs[i].maxPct = orig.maxPct
+                    finalIngs[i].minPct         = orig.minPct
+                    finalIngs[i].maxPct         = orig.maxPct
+                    // Delta her zaman son "Üretime Kaydet" anındaki değere göre gösterilir
+                    finalIngs[i].previousMixPct = orig.productionMixPct
                 }
             }
             formula.ingredients  = finalIngs
@@ -2460,6 +2469,229 @@ private struct NutrientComparisonSheet: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - MultiBlend LP Analizi Sheet
+
+private struct MultiBlendGroupLPSheet: View {
+    let group:         MultiBlendGroup
+    let groupFormulas: [BlendFormula]
+    let library:       [FeedIngredient]
+
+    @Environment(\.dismiss) private var dismiss
+
+    // IngLPEntry — her ortak hammadde için LP analiz özeti
+    private struct IngLPEntry: Identifiable {
+        let id:                UUID = UUID()
+        let code:              String
+        let name:              String
+        let currentPrice:      Double
+        let monthlyTons:       Double
+        // Rasyonda olan formüllerde: fiyat artış toleransı tavanı
+        let maxPriceCeiling:   Double?
+        let bindingFormula:    String?
+        // Rasyona girmeyen formüllerde: gerekli fiyat düşüşü
+        let requiredDrops:     [(formulaName: String, drop: Double)]
+    }
+
+    // Formüller üretim tonajına göre azalan sırada
+    private var sortedFormulas: [BlendFormula] {
+        let tons = group.productionTons
+        return groupFormulas.sorted { (tons[$0.code] ?? 0) > (tons[$1.code] ?? 0) }
+    }
+
+    private func formatTL(_ value: Double) -> String {
+        let fmt = NumberFormatter()
+        fmt.locale = Locale(identifier: "tr_TR")
+        fmt.numberStyle = .decimal
+        fmt.maximumFractionDigits = 0
+        return (fmt.string(from: NSNumber(value: value)) ?? String(format: "%.0f", value)) + " ₺"
+    }
+
+    // Her hammadde için LP analiz hesapla
+    private var lpEntries: [IngLPEntry] {
+        let tons    = group.productionTons
+        let libByCode = Dictionary(library.map { ($0.code, $0) }, uniquingKeysWith: { first, _ in first })
+
+        // Tüm grubun ortak hammaddelerini bul (en az 2 formülde olanlar + tüm kullanılanlar)
+        var ingCodes = Set<String>()
+        for f in groupFormulas { f.ingredients.forEach { ingCodes.insert($0.code) } }
+
+        var entries: [IngLPEntry] = []
+        for code in ingCodes {
+            let libEntry   = libByCode[code]
+            let price      = libEntry?.priceTL ?? 0
+            let name       = libEntry?.name ?? groupFormulas.compactMap { f in
+                f.ingredients.first { $0.code == code }?.name
+            }.first ?? code
+
+            // Aylık kullanım hesapla
+            let monthlyT = groupFormulas.reduce(0.0) { sum, f in
+                let pct  = f.ingredients.first { $0.code == code }?.mixPct ?? 0
+                let fTon = tons[f.code] ?? 0
+                return sum + pct / 100.0 * fTon
+            }
+
+            // Rasyonda olan formüllerde costRangeIncreases — en küçüğü bağlayan formül
+            var minIncrease: Double? = nil
+            var bindingName: String? = nil
+            var requiredDrops: [(formulaName: String, drop: Double)] = []
+
+            for f in groupFormulas {
+                guard (tons[f.code] ?? 0) > 0, let solve = f.lastSolve else { continue }
+                let isUsed = (f.ingredients.first { $0.code == code }?.mixPct ?? 0) > 0.001
+
+                if isUsed {
+                    if let inc = solve.costRangeIncreases[code], inc.isFinite {
+                        if minIncrease == nil || inc < minIncrease! {
+                            minIncrease = inc
+                            bindingName = f.name
+                        }
+                    }
+                } else {
+                    if let drop = solve.reducedCosts[code], drop.isFinite, drop > 0.5 {
+                        requiredDrops.append((formulaName: f.name, drop: drop))
+                    }
+                }
+            }
+
+            let ceiling: Double? = minIncrease.map { price + $0 }
+
+            entries.append(IngLPEntry(
+                code:             code,
+                name:             name,
+                currentPrice:     price,
+                monthlyTons:      monthlyT,
+                maxPriceCeiling:  ceiling,
+                bindingFormula:   bindingName,
+                requiredDrops:    requiredDrops.sorted { $0.drop < $1.drop }
+            ))
+        }
+
+        // Aylık maliyet = fiyat × kullanım (azalan sıra)
+        return entries.sorted { ($0.currentPrice * $0.monthlyTons) > ($1.currentPrice * $1.monthlyTons) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                // ── Formüller (üretim sırası) ─────────────────────────────────
+                Section {
+                    ForEach(sortedFormulas) { formula in
+                        let tons    = group.productionTons[formula.code] ?? 0
+                        let cost    = formula.lastSolve?.costPerTon ?? formula.currentCostTL
+                        let totalTL = cost * tons
+                        HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(formula.name).font(.subheadline.bold())
+                                Text(formula.code).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            VStack(alignment: .trailing, spacing: 2) {
+                                if tons > 0 {
+                                    Text(String(format: "%.1f ton/ay", tons))
+                                        .font(.caption.bold()).foregroundStyle(.orange)
+                                }
+                                if cost > 0 {
+                                    Text(String(format: "%.0f ₺/ton", cost))
+                                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                                }
+                                if totalTL > 0 {
+                                    Text(formatTL(totalTL))
+                                        .font(.caption2.bold().monospacedDigit()).foregroundStyle(.primary)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                } header: {
+                    Text("Formüller (Üretim Sırası)")
+                }
+
+                // ── Hammadde Hedef Fiyat Analizi ──────────────────────────────
+                Section {
+                    if lpEntries.isEmpty {
+                        Text("Çözüm sonucu bulunamadı. Önce \"Hesapla\" çalıştırın.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(lpEntries) { entry in
+                            ingLPRow(entry)
+                        }
+                    }
+                } header: {
+                    Text("Hammadde Hedef Fiyat Analizi")
+                } footer: {
+                    Text("Tavan fiyat: herhangi bir formülden düşmeden önce ödeyebileceğiniz maksimum alım fiyatı.\nGerekli düşüş: o hammaddenin belirtilen formüle girmesi için gereken fiyat indirimi.")
+                        .font(.caption2)
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("LP Analizi — \(group.name)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Kapat") { dismiss() }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func ingLPRow(_ entry: IngLPEntry) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Başlık satırı
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.name).font(.subheadline.bold())
+                    Text(entry.code).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    if entry.monthlyTons > 0 {
+                        Text(String(format: "%.2f ton/ay", entry.monthlyTons))
+                            .font(.caption.bold().monospacedDigit()).foregroundStyle(.orange)
+                    }
+                    if entry.currentPrice > 0 && entry.monthlyTons > 0 {
+                        Text(formatTL(entry.currentPrice * entry.monthlyTons) + "/ay")
+                            .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    if entry.currentPrice > 0 {
+                        Text(String(format: "%.0f ₺/ton", entry.currentPrice))
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+
+            // Tavan fiyat (yeşil)
+            if let ceiling = entry.maxPriceCeiling, let binding = entry.bindingFormula {
+                HStack(spacing: 5) {
+                    Image(systemName: "shield.lefthalf.filled").font(.caption2).foregroundStyle(.green)
+                    Text(String(format: "Tavan: %.0f ₺/ton", ceiling))
+                        .font(.caption.bold()).foregroundStyle(.green)
+                    Text("← \(binding)")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            // Gerekli düşüşler (turuncu)
+            ForEach(Array(entry.requiredDrops.prefix(3)), id: \.formulaName) { item in
+                HStack(spacing: 5) {
+                    Image(systemName: "arrow.down.circle.fill").font(.caption2).foregroundStyle(.orange)
+                    Text(String(format: "−%.0f ₺ → %@ rasyonuna girer", item.drop, item.formulaName))
+                        .font(.caption).foregroundStyle(.orange)
+                        .lineLimit(1)
+                }
+            }
+
+            // LP verisi yoksa
+            if entry.maxPriceCeiling == nil && entry.requiredDrops.isEmpty && entry.monthlyTons > 0 {
+                Text("LP verisi yok — formülü hesaplayın")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.vertical, 3)
     }
 }
 

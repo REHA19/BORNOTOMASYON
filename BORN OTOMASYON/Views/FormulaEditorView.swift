@@ -450,6 +450,7 @@ struct FormulaEditorView: View {
     @State private var showFormulaExport     = false
     @State private var showAssistant         = false
     @State private var breakdownTarget:      BreakdownTarget? = nil
+    @State private var nutrientIngredient:   FeedIngredient?  = nil
 
     init(formula: BlendFormula?, showCloseButton: Bool = false,
          previousCostTL: Double = 0, productionTons: Double = 0) {
@@ -518,6 +519,9 @@ struct FormulaEditorView: View {
             }
             .sheet(item: $breakdownTarget) { target in
                 NutrientBreakdownSheet(target: target)
+            }
+            .sheet(item: $nutrientIngredient) { ing in
+                EditIngredientView(ingredient: ing)
             }
         }
         .onAppear {
@@ -725,6 +729,14 @@ struct FormulaEditorView: View {
                         )
                     }, id: \.id) { $ing in
                         IngredientEditorRow(ing: $ing, totalKg: vm.totalKg, solved: true)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button {
+                                    nutrientIngredient = library.first { $0.code == ing.code }
+                                } label: {
+                                    Label("Besin Değerleri", systemImage: "chart.bar.doc.horizontal")
+                                }
+                                .tint(.indigo)
+                            }
                     }
                 } header: {
                     HStack {
@@ -759,6 +771,14 @@ struct FormulaEditorView: View {
                             )
                         }, id: \.id) { $ing in
                             IngredientEditorRow(ing: $ing, totalKg: vm.totalKg, solved: true)
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button {
+                                        nutrientIngredient = library.first { $0.code == ing.code }
+                                    } label: {
+                                        Label("Besin Değerleri", systemImage: "chart.bar.doc.horizontal")
+                                    }
+                                    .tint(.indigo)
+                                }
                         }
                         .onDelete { indexSet in
                             let ids = unusedIngs.map { $0.id }
@@ -774,6 +794,14 @@ struct FormulaEditorView: View {
                     ForEach($vm.ingredients) { $ing in
                         IngredientEditorRow(ing: $ing, totalKg: vm.totalKg,
                                             solved: vm.lastSolve != nil)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button {
+                                    nutrientIngredient = library.first { $0.code == ing.code }
+                                } label: {
+                                    Label("Besin Değerleri", systemImage: "chart.bar.doc.horizontal")
+                                }
+                                .tint(.indigo)
+                            }
                     }
                     .onDelete { indexSet in
                         vm.ingredients.remove(atOffsets: indexSet)
