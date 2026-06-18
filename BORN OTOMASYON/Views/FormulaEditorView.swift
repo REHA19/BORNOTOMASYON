@@ -1131,6 +1131,9 @@ struct FormulaEditorView: View {
             let prevCost:  Double?
         }
 
+        // Kullanıcının yazdığı fiyatları kütüphaneye aktar — libSnap'ten ÖNCE
+        syncOverridePricesToLibrary()
+
         let input = SolveIn(
             ings:       vm.ingredients,
             cons:       vm.constraints,
