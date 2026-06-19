@@ -119,6 +119,17 @@ struct MultiBlendReportSheet: View {
                 } footer: {
                     Text("Seçili \(selectedCodes.count) formül raporda yer alır. WhatsApp, E-posta, AirDrop ile paylaşılabilir.")
                 }
+
+                // ── Cihazlar arası formül aktarımı ──
+                Section {
+                    exportRow("Formülleri Aktar (Cihazlar Arası)",
+                              "Kod, ad, hammadde oranları ve besin kriterleriyle birlikte — diğer cihazda Rasyon İçe Aktar ile yüklenir",
+                              "arrow.triangle.2.circlepath", .indigo) { share(.transferTxt) }
+                } header: {
+                    Text("Formül Aktarımı")
+                } footer: {
+                    Text("Bu TXT dosyası diğer cihazda \"Rasyon İçe Aktar\" ekranından seçilince, içindeki tüm formüller kod kod ve isim isim ayrı ayrı yüklenebilir.")
+                }
             }
             .navigationTitle("MultiBlend Raporu")
             .navigationBarTitleDisplayMode(.inline)
@@ -190,7 +201,7 @@ struct MultiBlendReportSheet: View {
 
     // MARK: - Share
 
-    private enum Format { case pdf, csv, txt }
+    private enum Format { case pdf, csv, txt, transferTxt }
 
     private func share(_ format: Format) {
         guard !selectedCodes.isEmpty else { return }
@@ -208,9 +219,10 @@ struct MultiBlendReportSheet: View {
         Task.detached(priority: .userInitiated) {
             let url: URL
             switch format {
-            case .pdf: url = svc.writePDF()
-            case .csv: url = svc.writeCSV()
-            case .txt: url = svc.writeTXT()
+            case .pdf:         url = svc.writePDF()
+            case .csv:         url = svc.writeCSV()
+            case .txt:         url = svc.writeTXT()
+            case .transferTxt: url = svc.writeTransferTXT()
             }
             await MainActor.run {
                 isGenerating = false

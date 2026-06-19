@@ -9,6 +9,10 @@ struct ParsedRasyon: Identifiable {
     let date:       Date?
     let totalKg:    Double
     let ingredients: [ParsedRasyonIngredient]
+    // MultiBlend aktarım formatından geldiyse: tam (min/max/mix) hammadde verisi
+    // ve besin değeri kriterleri — basit TXT formatından gelirse boş kalır.
+    var fullIngredients: [BFIngredient]? = nil
+    var constraints: [BFConstraint] = []
 }
 
 struct ParsedRasyonIngredient: Identifiable {

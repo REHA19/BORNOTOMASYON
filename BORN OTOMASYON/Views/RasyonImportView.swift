@@ -188,7 +188,12 @@ struct RasyonImportView: View {
     private func loadFile(url: URL) {
         selectedFile = url.lastPathComponent
         do {
-            parsedList = try RasyonTXTParser.parse(url: url)
+            if MultiBlendTransferParser.canParse(url: url) {
+                // MultiBlend cihazlar arası aktarım formatı — besin kriterleriyle birlikte
+                parsedList = MultiBlendTransferParser.parse(url: url)
+            } else {
+                parsedList = try RasyonTXTParser.parse(url: url)
+            }
             if parsedList.isEmpty {
                 alertMsg  = "Dosyada geçerli rasyon bulunamadı."
                 showAlert = true
@@ -252,15 +257,23 @@ struct RasyonImportView: View {
         f.createdAt = r.date ?? Date()
         f.updatedAt = Date()
 
-        let bfIngs = RasyonTXTParser.toBFIngredients(from: r)
+        let bfIngs = r.fullIngredients ?? RasyonTXTParser.toBFIngredients(from: r)
         f.ingredients = bfIngs
+        if !r.constraints.isEmpty {
+            f.constraints = r.constraints
+        }
 
         // Çözüm sonuçlarını doldur → SingleBlend doğrudan gösterebilsin
-        let pctByCode = Dictionary(uniqueKeysWithValues: bfIngs.map { ($0.code, $0.mixPct) })
+        // Dosyada aynı koddan birden fazla satır gelebilir (kötü biçimli TXT) — son değeri kullan, çökme.
+        let pctByCode = Dictionary(bfIngs.map { ($0.code, $0.mixPct) }, uniquingKeysWith: { _, new in new })
+        let nutrientValues = Dictionary(
+            r.constraints.compactMap { c in c.currentValue.map { (c.nutrientKey, $0) } },
+            uniquingKeysWith: { _, new in new }
+        )
         f.lastSolve = BFSolveResult(
             percentagesByCode: pctByCode,
             costPerTon:        0,
-            nutrientValues:    [:],
+            nutrientValues:    nutrientValues,
             isFeasible:        true,
             message:           "TXT içe aktarım — \(r.code)",
             solvedAt:          r.date ?? Date()

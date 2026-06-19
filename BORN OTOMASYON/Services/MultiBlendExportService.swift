@@ -114,6 +114,7 @@ struct MultiBlendSnapshot: @unchecked Sendable {
     struct FormulaEntry: @unchecked Sendable {
         let code:           String
         let name:           String
+        let totalKg:        Double
         let costTL:         Double
         let productionTons: Double
         let ingredients:    [BFIngredient]
@@ -150,7 +151,7 @@ struct MultiBlendSnapshot: @unchecked Sendable {
             guard let f = allFormulas.first(where: { $0.code == code }) else { return nil }
             let cost = f.currentCostTL > 0 ? f.currentCostTL : f.recordedCostTL
             return FormulaEntry(
-                code: f.code, name: f.name, costTL: cost,
+                code: f.code, name: f.name, totalKg: f.totalKg, costTL: cost,
                 productionTons: group.productionTons[f.code] ?? 0,
                 ingredients: f.ingredients, constraints: f.constraints
             )
@@ -363,6 +364,46 @@ struct MultiBlendExportService {
         lines += ["", "════════════════════════════════════════════════════════════",
             "Rapor: \(dfS.string(from: Date()))  •  BORN OTOMASYON",
             "════════════════════════════════════════════════════════════"]
+        return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Transfer TXT (cihazlar arası formül aktarımı — Rasyon İçe Aktar ile uyumlu)
+    // İnsan-okunur rapordan farklı: kayıpsız, makine tarafından parse edilen format.
+    // Her formül kendi bloğunda — isim, kod, tüm hammadde min/max/mix oranları ve
+    // besin değeri kriterleri (min/max/hesaplanan) ile birlikte taşınır.
+
+    func generateTransferTXT() -> String {
+        var lines: [String] = []
+        for e in snap.entries {
+            lines.append("@@@FORMUL@@@")
+            lines.append("KOD: \(e.code)")
+            lines.append("AD: \(e.name)")
+            lines.append("TOPLAM_KG: \(e.totalKg)")
+            lines.append("HAMMADDE_SAYISI: \(e.ingredients.count)")
+            lines.append("---HAMMADDE---")
+            lines.append("KOD|AD|AKTIF|MIN|MAX|MIX|URETIM_MIX|FIYAT_TL")
+            for ing in e.ingredients {
+                let activeStr: String = ing.isActive ? "1" : "0"
+                let priceStr:  String = ing.overridePriceTLPerTon.map { String($0) } ?? ""
+                let fields: [String] = [
+                    ing.code, ing.name, activeStr,
+                    String(ing.minPct), String(ing.maxPct), String(ing.mixPct),
+                    String(ing.productionMixPct), priceStr
+                ]
+                lines.append(fields.joined(separator: "|"))
+            }
+            lines.append("---BESIN---")
+            lines.append("ANAHTAR|AD|BIRIM|MIN|MAX|HESAPLANAN")
+            for c in e.constraints {
+                let minStr: String = c.minValue.map { String($0) } ?? ""
+                let maxStr: String = c.maxValue.map { String($0) } ?? ""
+                let curStr: String = c.currentValue.map { String($0) } ?? ""
+                let fields: [String] = [c.nutrientKey, c.resolvedDisplayName, c.unit, minStr, maxStr, curStr]
+                lines.append(fields.joined(separator: "|"))
+            }
+            lines.append("@@@SON@@@")
+            lines.append("")
+        }
         return lines.joined(separator: "\n")
     }
 
@@ -631,6 +672,9 @@ struct MultiBlendExportService {
     // MARK: - File writers
 
     func writeTXT() -> URL { write(generateTXT().data(using: .utf8) ?? Data(), ext: "txt") }
+    func writeTransferTXT() -> URL {
+        write(generateTransferTXT().data(using: .utf8) ?? Data(), ext: "txt", suffix: "_aktarim")
+    }
     func writeCSV() -> URL {
         var d = Data([0xEF, 0xBB, 0xBF])
         d.append("sep=;\r\n".data(using: .utf8) ?? Data())
@@ -639,10 +683,10 @@ struct MultiBlendExportService {
     }
     func writePDF() -> URL { write(generatePDF(), ext: "pdf") }
 
-    private func write(_ data: Data, ext: String) -> URL {
+    private func write(_ data: Data, ext: String, suffix: String = "") -> URL {
         let safe = snap.groupName.replacingOccurrences(of: "/", with: "_")
         let url  = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(safe)_multiblend.\(ext)")
+            .appendingPathComponent("\(safe)_multiblend\(suffix).\(ext)")
         try? data.write(to: url)
         return url
     }
