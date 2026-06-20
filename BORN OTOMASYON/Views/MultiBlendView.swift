@@ -151,6 +151,13 @@ struct MultiBlendDetailView: View {
     @State private var priceHistoryIngredient: FeedIngredient?      = nil
     @State private var showGroupLP              = false
 
+    // Arama + çoklu seçim (formül listesinde)
+    @State private var formulaSearchText:     String              = ""
+    @State private var isSelectingFormulas:   Bool                = false
+    @State private var selectedFormulaCodes:  Set<String>         = []
+    @State private var sendScopeCodes:        [String]?           = nil
+    @State private var reportScopeCodes:      [String]?           = nil
+
     enum FormulaSort: String, CaseIterable {
         case tonDesc  = "Tonaj ↓"
         case tonAsc   = "Tonaj ↑"
@@ -191,6 +198,17 @@ struct MultiBlendDetailView: View {
         case .tonAsc:   return base.sorted { (tons[$0.code] ?? 0) < (tons[$1.code] ?? 0) }
         case .nameAsc:  return base.sorted { $0.name < $1.name }
         case .nameDesc: return base.sorted { $0.name > $1.name }
+        }
+    }
+
+    // Arama metnine göre filtrelenmiş formüller — sadece görüntüleme/seçim listesinde kullanılır,
+    // maliyet/üretim toplamları her zaman tüm groupFormulas üzerinden hesaplanır.
+    private var displayedFormulas: [BlendFormula] {
+        let q = formulaSearchText.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return groupFormulas }
+        return groupFormulas.filter {
+            $0.name.localizedCaseInsensitiveContains(q) ||
+            $0.code.localizedCaseInsensitiveContains(q)
         }
     }
 
@@ -332,39 +350,44 @@ struct MultiBlendDetailView: View {
             ingredientsSection
         }
         .listStyle(.insetGrouped)
+        .searchable(text: $formulaSearchText, prompt: "Formül adı veya kodu ara")
         .safeAreaInset(edge: .bottom) {
-            HStack(spacing: 10) {
-                // ── Hesapla ──────────────────────────────────────────────────
-                Button { Task { await calculateAll() } } label: {
-                    HStack(spacing: 6) {
-                        if isCalculating {
-                            ProgressView().progressViewStyle(.circular).scaleEffect(0.8).tint(.white)
-                        } else {
-                            Image(systemName: "cpu").font(.subheadline.bold())
+            if isSelectingFormulas {
+                selectionActionBar
+            } else {
+                HStack(spacing: 10) {
+                    // ── Hesapla ──────────────────────────────────────────────────
+                    Button { Task { await calculateAll() } } label: {
+                        HStack(spacing: 6) {
+                            if isCalculating {
+                                ProgressView().progressViewStyle(.circular).scaleEffect(0.8).tint(.white)
+                            } else {
+                                Image(systemName: "cpu").font(.subheadline.bold())
+                            }
+                            Text(isCalculating ? "Hesaplanıyor…" : "Hesapla").font(.subheadline.bold())
                         }
-                        Text(isCalculating ? "Hesaplanıyor…" : "Hesapla").font(.subheadline.bold())
-                    }
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 18).padding(.vertical, 13)
-                    .frame(maxWidth: .infinity)
-                    .background((isCalculating || groupFormulas.isEmpty) ? Color.gray.opacity(0.6) : Color.green, in: Capsule())
-                    .shadow(color: .green.opacity(isCalculating ? 0 : 0.5), radius: 8)
-                }
-                .disabled(isCalculating || groupFormulas.isEmpty)
-                .animation(.easeInOut(duration: 0.2), value: isCalculating)
-                // ── Üretime Kaydet ───────────────────────────────────────────
-                Button { showProductionConfirm = true } label: {
-                    Text("Üretime\nKaydet")
-                        .font(.caption.bold()).multilineTextAlignment(.center).foregroundStyle(.white)
-                        .padding(.horizontal, 14).padding(.vertical, 10)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 18).padding(.vertical, 13)
                         .frame(maxWidth: .infinity)
-                        .background((groupFormulas.isEmpty || isCalculating) ? Color.gray.opacity(0.5) : Color.indigo, in: Capsule())
-                        .shadow(color: .indigo.opacity(groupFormulas.isEmpty || isCalculating ? 0 : 0.4), radius: 8)
+                        .background((isCalculating || groupFormulas.isEmpty) ? Color.gray.opacity(0.6) : Color.green, in: Capsule())
+                        .shadow(color: .green.opacity(isCalculating ? 0 : 0.5), radius: 8)
+                    }
+                    .disabled(isCalculating || groupFormulas.isEmpty)
+                    .animation(.easeInOut(duration: 0.2), value: isCalculating)
+                    // ── Üretime Kaydet ───────────────────────────────────────────
+                    Button { showProductionConfirm = true } label: {
+                        Text("Üretime\nKaydet")
+                            .font(.caption.bold()).multilineTextAlignment(.center).foregroundStyle(.white)
+                            .padding(.horizontal, 14).padding(.vertical, 10)
+                            .frame(maxWidth: .infinity)
+                            .background((groupFormulas.isEmpty || isCalculating) ? Color.gray.opacity(0.5) : Color.indigo, in: Capsule())
+                            .shadow(color: .indigo.opacity(groupFormulas.isEmpty || isCalculating ? 0 : 0.4), radius: 8)
+                    }
+                    .disabled(groupFormulas.isEmpty || isCalculating)
                 }
-                .disabled(groupFormulas.isEmpty || isCalculating)
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .background(.ultraThinMaterial)
             }
-            .padding(.horizontal, 14).padding(.vertical, 10)
-            .background(.ultraThinMaterial)
         }
         .navigationTitle(group.name)
         .navigationBarTitleDisplayMode(.inline)
@@ -378,21 +401,35 @@ struct MultiBlendDetailView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 16) {
-                    // Grup adını değiştir
-                    Button {
-                        renameText      = group.name
-                        showRenameAlert = true
-                    } label: {
-                        Image(systemName: "pencil").foregroundStyle(.blue)
+                    if !isSelectingFormulas {
+                        // Grup adını değiştir
+                        Button {
+                            renameText      = group.name
+                            showRenameAlert = true
+                        } label: {
+                            Image(systemName: "pencil").foregroundStyle(.blue)
+                        }
+                        Button {
+                            sendScopeCodes = nil
+                            showSend       = true
+                        } label: {
+                            Image(systemName: "paperplane.fill").foregroundStyle(.orange)
+                        }
+                        .disabled(groupFormulas.isEmpty || isCalculating)
+                        Button {
+                            reportScopeCodes = nil
+                            showReport       = true
+                        } label: {
+                            Image(systemName: "square.and.arrow.up")
+                        }
+                        .disabled(groupFormulas.isEmpty)
                     }
-                    Button { showSend = true } label: {
-                        Image(systemName: "paperplane.fill").foregroundStyle(.orange)
+                    Button(isSelectingFormulas ? "Bitti" : "Seç") {
+                        isSelectingFormulas.toggle()
+                        if !isSelectingFormulas { selectedFormulaCodes = [] }
                     }
-                    .disabled(groupFormulas.isEmpty || isCalculating)
-                    Button { showReport = true } label: {
-                        Image(systemName: "square.and.arrow.up")
-                    }
-                    .disabled(groupFormulas.isEmpty)
+                    .font(.subheadline)
+                    .disabled(groupFormulas.isEmpty && !isSelectingFormulas)
                 }
             }
         }
@@ -418,10 +455,12 @@ struct MultiBlendDetailView: View {
             )
         }
         .sheet(isPresented: $showReport) {
-            MultiBlendReportSheet(group: group, allFormulas: allFormulas, library: library)
+            MultiBlendReportSheet(group: group, allFormulas: allFormulas, library: library,
+                                  preselectedCodes: reportScopeCodes)
         }
         .sheet(isPresented: $showSend) {
-            MultiBlendSendSheet(group: group, allFormulas: allFormulas)
+            let scoped = sendScopeCodes.map { codes in groupFormulas.filter { codes.contains($0.code) } }
+            MultiBlendSendSheet(formulas: scoped ?? groupFormulas, source: "MultiBlend")
         }
         .sheet(isPresented: $showAdder) {
             MultiBlendFormulaPickerSheet(
@@ -484,6 +523,59 @@ struct MultiBlendDetailView: View {
         }
     }
 
+    // MARK: - Seçim aksiyon barı (formül listesinde "Seç" modu)
+
+    private var selectionActionBar: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Button(selectedFormulaCodes.count == displayedFormulas.count ? "Hiçbirini Seçme" : "Tümünü Seç") {
+                    if selectedFormulaCodes.count == displayedFormulas.count {
+                        selectedFormulaCodes = []
+                    } else {
+                        selectedFormulaCodes = Set(displayedFormulas.map(\.code))
+                    }
+                }
+                .font(.caption.bold())
+                Spacer()
+                Text("\(selectedFormulaCodes.count) seçili")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 10) {
+                Button {
+                    sendScopeCodes = Array(selectedFormulaCodes)
+                    showSend       = true
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: "paperplane.fill").font(.subheadline.bold())
+                        Text("Sunucuya Gönder").font(.caption2.bold())
+                    }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(selectedFormulaCodes.isEmpty ? Color.gray.opacity(0.5) : Color.orange, in: RoundedRectangle(cornerRadius: 10))
+                }
+                .disabled(selectedFormulaCodes.isEmpty)
+
+                Button {
+                    reportScopeCodes = Array(selectedFormulaCodes)
+                    showReport       = true
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: "square.and.arrow.up").font(.subheadline.bold())
+                        Text("Rapor").font(.caption2.bold())
+                    }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(selectedFormulaCodes.isEmpty ? Color.gray.opacity(0.5) : Color.blue, in: RoundedRectangle(cornerRadius: 10))
+                }
+                .disabled(selectedFormulaCodes.isEmpty)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(.ultraThinMaterial)
+    }
+
     // MARK: - Formüller section
 
     private var formulasSection: some View {
@@ -491,24 +583,43 @@ struct MultiBlendDetailView: View {
             if groupFormulas.isEmpty {
                 Text("Henüz formül eklenmedi.")
                     .font(.caption).foregroundStyle(.secondary)
+            } else if displayedFormulas.isEmpty {
+                Text("\"\(formulaSearchText)\" ile eşleşen formül yok.")
+                    .font(.caption).foregroundStyle(.secondary)
             } else {
-                ForEach(groupFormulas) { formula in
-                    Button {
-                        editContext = FormulaEditContext(
-                            formula:        formula,
-                            previousCostTL: previousCosts[formula.code] ?? 0,
-                            productionTons: group.productionTons[formula.code] ?? 0
-                        )
-                    } label: {
-                        formulaRow(formula)
-                    }
-                    .buttonStyle(.plain)
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        Button(role: .destructive) {
-                            group.removeFormula(code: formula.code)
-                            try? context.save()
+                ForEach(displayedFormulas) { formula in
+                    if isSelectingFormulas {
+                        let selected = selectedFormulaCodes.contains(formula.code)
+                        Button {
+                            if selected { selectedFormulaCodes.remove(formula.code) }
+                            else        { selectedFormulaCodes.insert(formula.code) }
                         } label: {
-                            Label("Gruptan Çıkar", systemImage: "minus.circle")
+                            HStack(spacing: 12) {
+                                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(selected ? .blue : .secondary)
+                                    .font(.title3)
+                                formulaRow(formula)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Button {
+                            editContext = FormulaEditContext(
+                                formula:        formula,
+                                previousCostTL: previousCosts[formula.code] ?? 0,
+                                productionTons: group.productionTons[formula.code] ?? 0
+                            )
+                        } label: {
+                            formulaRow(formula)
+                        }
+                        .buttonStyle(.plain)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                group.removeFormula(code: formula.code)
+                                try? context.save()
+                            } label: {
+                                Label("Gruptan Çıkar", systemImage: "minus.circle")
+                            }
                         }
                     }
                 }
@@ -2228,10 +2339,13 @@ struct MultiBlendExportSheet: View {
     @Environment(\.dismiss)      private var dismiss
     @Query(sort: \MultiBlendGroup.createdAt, order: .reverse) private var groups: [MultiBlendGroup]
 
-    let formulaCode: String
+    let formulaCodes: [String]
 
     @State private var showNewField = false
     @State private var newName      = ""
+
+    init(formulaCode: String) { self.formulaCodes = [formulaCode] }
+    init(formulaCodes: [String]) { self.formulaCodes = formulaCodes }
 
     var body: some View {
         NavigationStack {
@@ -2244,7 +2358,7 @@ struct MultiBlendExportSheet: View {
                                 let trimmed = newName.trimmingCharacters(in: .whitespaces)
                                 guard !trimmed.isEmpty else { return }
                                 let g = MultiBlendGroup(name: trimmed)
-                                g.addFormula(code: formulaCode)
+                                for code in formulaCodes { g.addFormula(code: code) }
                                 context.insert(g)
                                 try? context.save()
                                 dismiss()
@@ -2260,15 +2374,20 @@ struct MultiBlendExportSheet: View {
                                 .foregroundStyle(.indigo)
                         }
                     }
+                } footer: {
+                    if formulaCodes.count > 1 {
+                        Text("\(formulaCodes.count) formül seçili — hepsi birden gruba eklenecek.")
+                    }
                 }
 
                 if !groups.isEmpty {
                     Section("Mevcut Gruplar") {
                         ForEach(groups) { group in
-                            let already = group.formulaCodes.contains(formulaCode)
+                            let missing = formulaCodes.filter { !group.formulaCodes.contains($0) }
+                            let already = missing.isEmpty
                             Button {
                                 guard !already else { return }
-                                group.addFormula(code: formulaCode)
+                                for code in missing { group.addFormula(code: code) }
                                 try? context.save()
                                 dismiss()
                             } label: {
@@ -2291,7 +2410,7 @@ struct MultiBlendExportSheet: View {
                     }
                 }
             }
-            .navigationTitle("MultiBlend'e Aktar")
+            .navigationTitle(formulaCodes.count > 1 ? "MultiBlend'e Toplu Aktar" : "MultiBlend'e Aktar")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

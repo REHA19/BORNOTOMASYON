@@ -212,8 +212,8 @@ struct SendFormulaSheet: View {
 // MARK: - Multi-formula (MultiBlend) batch send sheet
 
 struct MultiBlendSendSheet: View {
-    let group:       MultiBlendGroup
-    let allFormulas: [BlendFormula]
+    let formulas: [BlendFormula]
+    var source:   String = "MultiBlend"   // kayıt için: "MultiBlend" veya "SingleBlend"
 
     @Environment(\.dismiss)      private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -221,6 +221,7 @@ struct MultiBlendSendSheet: View {
     // Per-formula
     @State private var customNames: [String: String] = [:]
     @State private var selected:    Set<String>      = []
+    @State private var searchText:  String           = ""
 
     // Shared
     @State private var validDate:      Date   = Date()
@@ -234,12 +235,16 @@ struct MultiBlendSendSheet: View {
     @State private var sendResults:      [String: SendOutcome]  = [:]
     @State private var currentlySending: String?                = nil
 
-    private var groupFormulas: [BlendFormula] {
-        group.formulaCodes.compactMap { code in allFormulas.first { $0.code == code } }
+    private var selectedFormulas: [BlendFormula] {
+        formulas.filter { selected.contains($0.code) }
     }
 
-    private var selectedFormulas: [BlendFormula] {
-        groupFormulas.filter { selected.contains($0.code) }
+    private var filteredFormulas: [BlendFormula] {
+        guard !searchText.trimmingCharacters(in: .whitespaces).isEmpty else { return formulas }
+        return formulas.filter {
+            $0.name.localizedCaseInsensitiveContains(searchText) ||
+            $0.code.localizedCaseInsensitiveContains(searchText)
+        }
     }
 
     var body: some View {
@@ -249,6 +254,7 @@ struct MultiBlendSendSheet: View {
                 selectionHeaderSection
                 formulaRowsSection
             }
+            .searchable(text: $searchText, prompt: "Formül adı veya kodu ara")
             .navigationTitle("Toplu Gönderim")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -276,8 +282,8 @@ struct MultiBlendSendSheet: View {
                 }
             }
             .onAppear {
-                selected = Set(groupFormulas.map(\.code))
-                for f in groupFormulas { customNames[f.code] = f.name }
+                selected = Set(formulas.map(\.code))
+                for f in formulas { customNames[f.code] = f.name }
             }
         }
     }
@@ -309,22 +315,22 @@ struct MultiBlendSendSheet: View {
         Section {
             HStack {
                 Button("Tümünü Seç") {
-                    selected = Set(groupFormulas.map(\.code))
+                    selected = Set(formulas.map(\.code))
                 }
-                .disabled(selected.count == groupFormulas.count)
+                .disabled(selected.count == formulas.count)
                 Spacer()
                 Button("Seçimi Temizle") { selected = [] }
                     .disabled(selected.isEmpty)
             }
             .font(.caption)
         } header: {
-            Text("Formüller (\(selected.count)/\(groupFormulas.count) seçili)")
+            Text("Formüller (\(selected.count)/\(formulas.count) seçili)")
         }
     }
 
     @ViewBuilder
     private var formulaRowsSection: some View {
-        ForEach(groupFormulas) { formula in
+        ForEach(filteredFormulas) { formula in
             let isSelected = selected.contains(formula.code)
             let result     = sendResults[formula.code]
             let isCurrent  = currentlySending == formula.code
@@ -495,7 +501,7 @@ struct MultiBlendSendSheet: View {
             formulaName:          formula.name,
             customName:           customName,
             customVersion:        customVersion,
-            source:               "MultiBlend",
+            source:               source,
             isSuccess:            success,
             serverMessage:        message,
             ingredientCount:      active.count,

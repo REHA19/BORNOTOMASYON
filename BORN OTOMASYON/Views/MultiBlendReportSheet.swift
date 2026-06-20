@@ -12,18 +12,28 @@ struct MultiBlendReportSheet: View {
     @State private var showShare      = false
     @State private var isGenerating   = false
     @State private var showSettings   = false
+    @State private var searchText     = ""
 
     @ObservedObject private var settings = ReportSettings.shared
 
-    init(group: MultiBlendGroup, allFormulas: [BlendFormula], library: [FeedIngredient]) {
+    init(group: MultiBlendGroup, allFormulas: [BlendFormula], library: [FeedIngredient],
+         preselectedCodes: [String]? = nil) {
         self.group       = group
         self.allFormulas = allFormulas
         self.library     = library
-        _selectedCodes   = State(initialValue: Set(group.formulaCodes))
+        _selectedCodes   = State(initialValue: Set(preselectedCodes ?? group.formulaCodes))
     }
 
     private var groupFormulas: [BlendFormula] {
         group.formulaCodes.compactMap { code in allFormulas.first { $0.code == code } }
+    }
+
+    private var filteredGroupFormulas: [BlendFormula] {
+        guard !searchText.trimmingCharacters(in: .whitespaces).isEmpty else { return groupFormulas }
+        return groupFormulas.filter {
+            $0.name.localizedCaseInsensitiveContains(searchText) ||
+            $0.code.localizedCaseInsensitiveContains(searchText)
+        }
     }
 
     // All unique constraint names from selected formulas (for nutrient toggle)
@@ -57,7 +67,7 @@ struct MultiBlendReportSheet: View {
                     Text("Formüller (\(selectedCodes.count)/\(groupFormulas.count) seçili)")
                 }
 
-                ForEach(groupFormulas) { formula in
+                ForEach(filteredGroupFormulas) { formula in
                     let selected = selectedCodes.contains(formula.code)
                     Button {
                         if selected { selectedCodes.remove(formula.code) }
@@ -131,6 +141,7 @@ struct MultiBlendReportSheet: View {
                     Text("Bu TXT dosyası diğer cihazda \"Rasyon İçe Aktar\" ekranından seçilince, içindeki tüm formüller kod kod ve isim isim ayrı ayrı yüklenebilir.")
                 }
             }
+            .searchable(text: $searchText, prompt: "Formül adı veya kodu ara")
             .navigationTitle("MultiBlend Raporu")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

@@ -16,6 +16,18 @@ struct SingleBlendListView: View {
     @State private var clipboard:       BlendFormula?    = nil
     @State private var showPasteSheet   = false
 
+    // Arama
+    @State private var searchText       = ""
+
+    // Çoklu seçim (toplu işlemler)
+    @State private var isSelecting      = false
+    @State private var selectedCodes:   Set<String> = []
+    @State private var showBulkTransfer = false
+    @State private var showBulkSend     = false
+    @State private var bulkShareItems:  [Any] = []
+    @State private var showBulkShare    = false
+    @State private var isGeneratingBulkReport = false
+
     var body: some View {
         NavigationStack {
             Group {
@@ -25,13 +37,14 @@ struct SingleBlendListView: View {
                     formulaList
                 }
             }
+            .searchable(text: $searchText, prompt: "Formül adı veya kodu ara")
             .navigationTitle("SingleBlend Formüller")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     HStack(spacing: 14) {
                         // Panoda formül varsa yapıştır butonu toolbar'da da görünsün
-                        if clipboard != nil {
+                        if !isSelecting, clipboard != nil {
                             Button {
                                 showPasteSheet = true
                             } label: {
@@ -39,11 +52,20 @@ struct SingleBlendListView: View {
                                     .foregroundStyle(.green)
                             }
                         }
-                        Button { showNewFormula = true } label: {
-                            Image(systemName: "plus")
+                        if !isSelecting {
+                            Button { showNewFormula = true } label: {
+                                Image(systemName: "plus")
+                            }
+                        }
+                        Button(isSelecting ? "Bitti" : "Seç") {
+                            isSelecting.toggle()
+                            if !isSelecting { selectedCodes = [] }
                         }
                     }
                 }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if isSelecting { bulkActionBar }
             }
             .sheet(isPresented: $showNewFormula) {
                 FormulaEditorView(formula: nil)
@@ -61,11 +83,120 @@ struct SingleBlendListView: View {
                     }
                 }
             }
+            .sheet(isPresented: $showBulkTransfer) {
+                MultiBlendExportSheet(formulaCodes: Array(selectedCodes))
+            }
+            .sheet(isPresented: $showBulkSend) {
+                MultiBlendSendSheet(formulas: selectedFormulas, source: "SingleBlend")
+            }
+            .overlay { if isGeneratingBulkReport { bulkReportGeneratingOverlay } }
+            .background {
+                if showBulkShare {
+                    ActivitySheet(items: bulkShareItems, isPresented: $showBulkShare)
+                        .frame(width: 0, height: 0)
+                        .allowsHitTesting(false)
+                }
+            }
             .alert("Formülü Sil", isPresented: $showDeleteAlert, presenting: deleteTarget) { f in
                 Button("Sil", role: .destructive) { delete(f) }
                 Button("Vazgeç", role: .cancel) {}
             } message: { f in
                 Text("\"\(f.name)\" formülü kalıcı olarak silinecek.")
+            }
+        }
+    }
+
+    // MARK: - Arama / seçim yardımcıları
+
+    private var filteredFormulas: [BlendFormula] {
+        guard !searchText.trimmingCharacters(in: .whitespaces).isEmpty else { return formulas }
+        return formulas.filter {
+            $0.name.localizedCaseInsensitiveContains(searchText) ||
+            $0.code.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
+    private var selectedFormulas: [BlendFormula] {
+        formulas.filter { selectedCodes.contains($0.code) }
+    }
+
+    // MARK: - Toplu işlem barı
+
+    private var bulkActionBar: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Button(selectedCodes.count == filteredFormulas.count ? "Hiçbirini Seçme" : "Tümünü Seç") {
+                    if selectedCodes.count == filteredFormulas.count {
+                        selectedCodes = []
+                    } else {
+                        selectedCodes = Set(filteredFormulas.map(\.code))
+                    }
+                }
+                .font(.caption.bold())
+                Spacer()
+                Text("\(selectedCodes.count) seçili")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 10) {
+                bulkButton("Multi'ye Aktar", "rectangle.3.group.fill", .indigo) {
+                    showBulkTransfer = true
+                }
+                bulkButton("Gönder", "paperplane.fill", .orange) {
+                    showBulkSend = true
+                }
+                bulkButton("Rapor", "square.and.arrow.up", .blue) {
+                    shareBulkReport()
+                }
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(.ultraThinMaterial)
+    }
+
+    private func bulkButton(_ title: String, _ icon: String, _ color: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: icon).font(.subheadline.bold())
+                Text(title).font(.caption2.bold())
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(selectedCodes.isEmpty ? Color.gray.opacity(0.5) : color, in: RoundedRectangle(cornerRadius: 10))
+        }
+        .disabled(selectedCodes.isEmpty)
+    }
+
+    private var bulkReportGeneratingOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.35).ignoresSafeArea()
+            VStack(spacing: 14) {
+                ProgressView()
+                Text("Raporlar hazırlanıyor…").font(.subheadline)
+            }
+            .padding(28)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        }
+    }
+
+    // Seçili her formül için ayrı TXT raporu üretip hepsini birden paylaşıma sunar.
+    private func shareBulkReport() {
+        guard !selectedCodes.isEmpty else { return }
+        isGeneratingBulkReport = true
+        let targets = selectedFormulas
+        let lib     = library
+
+        Task.detached(priority: .userInitiated) {
+            var urls: [URL] = []
+            for formula in targets {
+                let snapshot = FormulaSnapshot.make(formula: formula, library: lib)
+                let svc      = FormulaExportService(snap: snapshot)
+                urls.append(svc.writeTXT())
+            }
+            await MainActor.run {
+                isGeneratingBulkReport = false
+                bulkShareItems         = urls
+                showBulkShare          = true
             }
         }
     }
@@ -99,9 +230,27 @@ struct SingleBlendListView: View {
                 }
             }
 
-            ForEach(formulas) { formula in
-                NavigationLink(destination: FormulaEditorView(formula: formula)) {
-                    FormulaRow(formula: formula)
+            ForEach(filteredFormulas) { formula in
+                Group {
+                    if isSelecting {
+                        let selected = selectedCodes.contains(formula.code)
+                        Button {
+                            if selected { selectedCodes.remove(formula.code) }
+                            else        { selectedCodes.insert(formula.code) }
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(selected ? .blue : .secondary)
+                                    .font(.title3)
+                                FormulaRow(formula: formula)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        NavigationLink(destination: FormulaEditorView(formula: formula)) {
+                            FormulaRow(formula: formula)
+                        }
+                    }
                 }
                 .contextMenu {
                     // Kopyala
