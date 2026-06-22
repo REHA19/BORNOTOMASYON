@@ -8,6 +8,36 @@ struct UpdateFormulaRequest: Content {
     let combinations: [BFCombination]?
 }
 
+/// BlendFormula's ingredients/constraints/lastSolve/combinations are computed
+/// properties (decoded from *_JSON string columns), so Fluent's synthesized
+/// Codable conformance skips them — only the raw JSON string columns would
+/// serialize. This DTO exposes the parsed values to API clients instead.
+struct FormulaDTO: Content {
+    let id: UUID
+    let code: String
+    let name: String
+    let totalKg: Double
+    let recordedCostTL: Double
+    let version: Int
+    let ingredients: [BFIngredient]
+    let constraints: [BFConstraint]
+    let combinations: [BFCombination]
+    let lastSolve: BFSolveResult?
+
+    init(_ formula: BlendFormula) {
+        self.id = formula.id!
+        self.code = formula.code
+        self.name = formula.name
+        self.totalKg = formula.totalKg
+        self.recordedCostTL = formula.recordedCostTL
+        self.version = formula.version
+        self.ingredients = formula.ingredients
+        self.constraints = formula.constraints
+        self.combinations = formula.combinations
+        self.lastSolve = formula.lastSolve
+    }
+}
+
 /// CRUD + solve for blend_formulas — Plan §1 (Faz 1 milestone: materials + formulas + LP solve).
 struct FormulaController: RouteCollection {
     func boot(routes: RoutesBuilder) throws {
@@ -16,28 +46,43 @@ struct FormulaController: RouteCollection {
             .grouped(MenuAccessMiddleware(menuKey: "single_blend"))
 
         formulas.get(use: list)
+        formulas.post(use: create)
         formulas.get(":formulaID", use: detail)
         formulas.put(":formulaID", use: update)
         formulas.post(":formulaID", "solve", use: solve)
     }
 
     @Sendable
-    func list(req: Request) async throws -> [BlendFormula] {
-        try await BlendFormula.query(on: req.db).all()
+    func list(req: Request) async throws -> [FormulaDTO] {
+        try await BlendFormula.query(on: req.db).sort(\.$name).all().map(FormulaDTO.init)
     }
 
     @Sendable
-    func detail(req: Request) async throws -> BlendFormula {
+    func detail(req: Request) async throws -> FormulaDTO {
         guard let formula = try await find(req: req) else {
             throw Abort(.notFound)
         }
-        return formula
+        return FormulaDTO(formula)
+    }
+
+    struct CreateFormulaRequest: Content {
+        let code: String
+        let name: String
+        let totalKg: Double?
+    }
+
+    @Sendable
+    func create(req: Request) async throws -> FormulaDTO {
+        let body = try req.content.decode(CreateFormulaRequest.self)
+        let formula = BlendFormula(code: body.code, name: body.name, totalKg: body.totalKg ?? 1000)
+        try await formula.save(on: req.db)
+        return FormulaDTO(formula)
     }
 
     /// Optimistic locking (Plan §6): caller must send the version it last read;
     /// a stale version means someone else edited the formula concurrently.
     @Sendable
-    func update(req: Request) async throws -> BlendFormula {
+    func update(req: Request) async throws -> FormulaDTO {
         guard let formula = try await find(req: req) else {
             throw Abort(.notFound)
         }
@@ -54,11 +99,11 @@ struct FormulaController: RouteCollection {
         }
         formula.version += 1
         try await formula.save(on: req.db)
-        return formula
+        return FormulaDTO(formula)
     }
 
     @Sendable
-    func solve(req: Request) async throws -> BlendFormula {
+    func solve(req: Request) async throws -> FormulaDTO {
         guard let formula = try await find(req: req) else {
             throw Abort(.notFound)
         }
@@ -107,7 +152,7 @@ struct FormulaController: RouteCollection {
         }
         formula.version += 1
         try await formula.save(on: req.db)
-        return formula
+        return FormulaDTO(formula)
     }
 
     private func find(req: Request) async throws -> BlendFormula? {

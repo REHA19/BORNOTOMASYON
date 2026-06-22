@@ -1,7 +1,6 @@
+import { Link } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 
-/** Placeholder home screen — Faz 1+ will replace this with the real menu
- * (hammaddeler, formüller, MultiBlend, ...) gated by user_menu_access. */
 export default function Dashboard() {
   const { user, logout } = useAuth();
 
@@ -15,9 +14,27 @@ export default function Dashboard() {
         Giriş yapan kullanıcı: <strong>{user?.displayName}</strong> ({user?.username})
         {user?.isAdmin && " — Admin"}
       </p>
-      <p style={{ color: "#888" }}>
-        Menüler (hammaddeler, formüller, MultiBlend...) sonraki fazda buraya eklenecek.
+
+      <nav style={{ display: "flex", gap: 16, marginTop: 24 }}>
+        <Link to="/materials" style={navLinkStyle}>
+          Hammaddeler
+        </Link>
+        <Link to="/formulas" style={navLinkStyle}>
+          Formüller
+        </Link>
+      </nav>
+      <p style={{ color: "#888", marginTop: 24 }}>
+        MultiBlend, fiyat takibi, raporlar gibi diğer menüler sonraki fazlarda eklenecek.
       </p>
     </div>
   );
 }
+
+const navLinkStyle: React.CSSProperties = {
+  padding: "10px 16px",
+  borderRadius: 8,
+  background: "#1a5e9a",
+  color: "#fff",
+  textDecoration: "none",
+  fontWeight: 600,
+};

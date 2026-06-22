@@ -6,4 +6,5 @@ func routes(_ app: Application) throws {
     try app.register(collection: AuthController())
     try app.register(collection: AdminController())
     try app.register(collection: FormulaController())
+    try app.register(collection: MaterialController())
 }

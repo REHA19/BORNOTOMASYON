@@ -2,6 +2,9 @@ import { Navigate, Route, BrowserRouter, Routes } from "react-router-dom";
 import { AuthProvider, useAuth, hasStoredToken } from "./lib/auth";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
+import Materials from "./pages/Materials";
+import Formulas from "./pages/Formulas";
+import FormulaEditor from "./pages/FormulaEditor";
 import type { ReactNode } from "react";
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
@@ -21,6 +24,30 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <Dashboard />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/materials"
+            element={
+              <ProtectedRoute>
+                <Materials />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/formulas"
+            element={
+              <ProtectedRoute>
+                <Formulas />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/formulas/:id"
+            element={
+              <ProtectedRoute>
+                <FormulaEditor />
               </ProtectedRoute>
             }
           />
