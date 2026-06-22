@@ -8,7 +8,7 @@ COPY Package.swift Package.resolved* ./
 RUN swift package resolve
 
 COPY Sources ./Sources
-RUN swift build -c release --static-swift-stdlib
+RUN swift build -c release --product App --static-swift-stdlib
 
 FROM swift:5.10-jammy-slim
 WORKDIR /app
