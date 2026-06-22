@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { apiFetch, ApiError } from "../lib/api";
+import { sendFormulaToFactory } from "../lib/factorySend";
 import type { BFConstraint, BFIngredient, Formula, Material } from "../lib/types";
 
 function newIngredient(code: string, name: string): BFIngredient {
@@ -39,6 +40,15 @@ export default function FormulaEditor() {
   const [error, setError] = useState<string | null>(null);
   const [isSolving, setIsSolving] = useState(false);
 
+  const [sendOpen, setSendOpen] = useState(false);
+  const [customName, setCustomName] = useState("");
+  const [customVersion, setCustomVersion] = useState("1");
+  const [validDate, setValidDate] = useState("");
+  const [comment, setComment] = useState("");
+  const [activate, setActivate] = useState(true);
+  const [isSending, setIsSending] = useState(false);
+  const [sendResult, setSendResult] = useState<string | null>(null);
+
   function load() {
     apiFetch<Formula>(`/formulas/${id}`).then(setFormula).catch((e) => setError(e instanceof ApiError ? e.message : "Yüklenemedi"));
   }
@@ -47,6 +57,9 @@ export default function FormulaEditor() {
   useEffect(() => {
     apiFetch<Material[]>("/materials").then(setMaterials).catch(() => {});
   }, []);
+  useEffect(() => {
+    if (formula && !customName) setCustomName(formula.name);
+  }, [formula]);
 
   if (!formula) return <div style={{ padding: 32 }}>{error ?? "Yükleniyor..."}</div>;
 
@@ -110,6 +123,19 @@ export default function FormulaEditor() {
       setError(err instanceof ApiError ? err.message : "Çözülemedi");
     } finally {
       setIsSolving(false);
+    }
+  }
+
+  async function sendToFactory() {
+    setIsSending(true);
+    setSendResult(null);
+    try {
+      await sendFormulaToFactory(formula!, { customName, customVersion, validDate, comment, activate });
+      setSendResult("Fabrika sunucusuna başarıyla gönderildi.");
+    } catch (err) {
+      setSendResult(err instanceof Error ? err.message : "Gönderim başarısız.");
+    } finally {
+      setIsSending(false);
     }
   }
 
@@ -233,6 +259,9 @@ export default function FormulaEditor() {
         <button onClick={solve} disabled={isSolving}>
           {isSolving ? "Çözülüyor..." : "Çöz"}
         </button>
+        {formula.lastSolve?.isFeasible && (
+          <button onClick={() => setSendOpen((v) => !v)}>Sunucuya Gönder</button>
+        )}
       </div>
 
       {formula.lastSolve && (
@@ -242,6 +271,41 @@ export default function FormulaEditor() {
           {formula.lastSolve.isFeasible && <p>Maliyet: {formula.lastSolve.costPerTon.toFixed(2)} ₺/ton</p>}
         </div>
       )}
+
+      {sendOpen && (
+        <div style={{ marginTop: 16, padding: 16, border: "1px solid #ddd", borderRadius: 8, maxWidth: 400 }}>
+          <h3 style={{ marginTop: 0 }}>Fabrika Sunucusuna Gönder (192.168.2.77:5001)</h3>
+          <p style={{ color: "#888", fontSize: 13 }}>
+            Bu işlem yalnızca fabrika ağına (VPN dahil) bağlıyken çalışır.
+          </p>
+          <label style={fieldStyle}>
+            İsim
+            <input value={customName} onChange={(e) => setCustomName(e.target.value)} />
+          </label>
+          <label style={fieldStyle}>
+            Versiyon
+            <input value={customVersion} onChange={(e) => setCustomVersion(e.target.value)} />
+          </label>
+          <label style={fieldStyle}>
+            Geçerlilik Tarihi
+            <input type="date" value={validDate} onChange={(e) => setValidDate(e.target.value)} />
+          </label>
+          <label style={fieldStyle}>
+            Not
+            <input value={comment} onChange={(e) => setComment(e.target.value)} />
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 4, margin: "8px 0" }}>
+            <input type="checkbox" checked={activate} onChange={(e) => setActivate(e.target.checked)} />
+            Aktif olarak işaretle
+          </label>
+          <button onClick={sendToFactory} disabled={isSending || !customName.trim()}>
+            {isSending ? "Gönderiliyor..." : "Gönder"}
+          </button>
+          {sendResult && <p style={{ marginTop: 8 }}>{sendResult}</p>}
+        </div>
+      )}
     </div>
   );
 }
+
+const fieldStyle: React.CSSProperties = { display: "block", margin: "8px 0" };
