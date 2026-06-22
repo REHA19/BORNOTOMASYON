@@ -22,5 +22,13 @@ services:
     ports:
       - "8080:8080"
 
+  frontend:
+    build: ./Frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
 volumes:
   db_data:
