@@ -9,7 +9,7 @@ RUN swift package resolve
 
 COPY Sources ./Sources
 COPY Tests ./Tests
-RUN swift build -c release --product App --static-swift-stdlib
+RUN swift build -c release --product App --static-swift-stdlib -Xswiftc -j1
 
 FROM swift:6.1-jammy-slim
 WORKDIR /app
