@@ -175,4 +175,6 @@ struct BFSolveResult: Codable {
     // Kısıt dual değişkenleri — ₺/ton per 1 orijinal birim gevşeme
     var shadowPricesMin:    [String: Double] = [:]   // ≥ kısıtlar (besin min)
     var shadowPricesMax:    [String: Double] = [:]   // ≤ kısıtlar (besin max)
+    // Kısıt sağlanamadığında: sınır gevşetme önerileri (maliyete göre sıralı)
+    var shortfallReports:   [ConstraintShortfallReport] = []
 }

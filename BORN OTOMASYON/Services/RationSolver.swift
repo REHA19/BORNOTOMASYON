@@ -38,6 +38,30 @@ struct SolverResult {
     var shadowPricesMax:   [String: Double] = [:]   // ≤ kısıtlar
 }
 
+// MARK: - Bound-relaxation suggestion types
+
+enum BoundKind: String, Codable {
+    case minPct, maxPct
+}
+
+struct BoundRelaxationSuggestion: Identifiable, Codable {
+    var id: UUID = UUID()
+    let ingredientCode:      String
+    let bound:               BoundKind
+    let currentValue:        Double
+    let suggestedValue:      Double
+    let resultingCostPerTon: Double
+}
+
+struct ConstraintShortfallReport: Identifiable, Codable {
+    var id: UUID = UUID()
+    let constraintKey:    String
+    let targetValue:      Double
+    let achievableValue:  Double
+    let isMinConstraint:  Bool   // true = the dropped constraint was a min-type
+    let suggestions:      [BoundRelaxationSuggestion]   // sorted by resultingCostPerTon ascending
+}
+
 // MARK: - Revised Simplex (minimisation, equality form via Big-M)
 
 enum RationSolver {
@@ -315,6 +339,327 @@ enum RationSolver {
     private static func infeasible(_ msg: String) -> SolverResult {
         SolverResult(isFeasible: false, percentagesByCode: [:],
                      costPerTon: 0, nutrientValues: [:], message: msg)
+    }
+}
+
+// MARK: - Bound-relaxation suggestion engine
+//
+// Self-contained: builds its own (simple, non-flat) tableau rather than touching the
+// performance-tuned flat-tableau `solve()` above. Used only on the infeasible/advisory
+// path, so the extra allocation cost is acceptable — these calls happen a handful of
+// times per failed solve, not on the hot path.
+extension RationSolver {
+
+    fileprivate struct SecRow {
+        var coeffs: [Double]
+        var rhs:    Double
+        var needsArtificial: Bool
+    }
+
+    private static func normalizeForSecondary(_ ingredients: [SolverIngredient]) -> [SolverIngredient] {
+        ingredients.map { ing in
+            let max = ing.maxPct > 0 ? ing.maxPct : 100.0
+            return SolverIngredient(code: ing.code, name: ing.name, priceTLPerTon: ing.priceTLPerTon,
+                                    minPct: ing.minPct, maxPct: max, nutrients: ing.nutrients)
+        }
+    }
+
+    private static func secondaryRows(active: [SolverIngredient], nutKeys: [SolverConstraint],
+                                       combinations: [SolverCombination]) -> [SecRow] {
+        let n = active.count
+        var rows: [SecRow] = []
+        rows.append(SecRow(coeffs: Array(repeating: 1.0, count: n), rhs: 100.0, needsArtificial: true))
+        for i in 0..<n {
+            var c = [Double](repeating: 0, count: n); c[i] = 1
+            rows.append(SecRow(coeffs: c, rhs: active[i].maxPct, needsArtificial: false))
+        }
+        for i in 0..<n {
+            guard active[i].minPct > 0 else { continue }
+            var c = [Double](repeating: 0, count: n); c[i] = 1
+            rows.append(SecRow(coeffs: c, rhs: active[i].minPct, needsArtificial: true))
+        }
+        for con in nutKeys {
+            let coeffs: [Double] = active.map { $0.nutrients[con.key] ?? 0 }
+            if let minV = con.minValue { rows.append(SecRow(coeffs: coeffs, rhs: minV * 100, needsArtificial: true)) }
+            if let maxV = con.maxValue { rows.append(SecRow(coeffs: coeffs, rhs: maxV * 100, needsArtificial: false)) }
+        }
+        for combo in combinations {
+            let indices = combo.ingredientCodes.compactMap { code in active.firstIndex { $0.code == code } }
+            guard !indices.isEmpty else { continue }
+            var coeffs = [Double](repeating: 0, count: n)
+            for idx in indices { coeffs[idx] = 1 }
+            if let maxPct = combo.maxPct, maxPct >= 0 { rows.append(SecRow(coeffs: coeffs, rhs: maxPct, needsArtificial: false)) }
+            if let minPct = combo.minPct, minPct > 0 { rows.append(SecRow(coeffs: coeffs, rhs: minPct, needsArtificial: true)) }
+        }
+        return rows
+    }
+
+    private static func runSecondarySimplex(n: Int, rows: [SecRow], objectiveCoeffs: [Double]) -> (x: [Double], feasible: Bool) {
+        let m = rows.count
+        let artCount = rows.filter { $0.needsArtificial }.count
+        let slackCount = m
+        let cols = n + slackCount + artCount + 1
+        var T = [[Double]](repeating: [Double](repeating: 0, count: cols), count: m + 1)
+
+        var artIdx = 0
+        for (r, row) in rows.enumerated() {
+            for j in 0..<n { T[r][j] = row.coeffs[j] }
+            let sCol = n + r
+            if row.needsArtificial {
+                T[r][sCol] = -1
+                let aCol = n + slackCount + artIdx
+                T[r][aCol] = 1
+                artIdx += 1
+            } else {
+                T[r][sCol] = 1
+            }
+            T[r][cols - 1] = row.rhs
+        }
+
+        let bigM = 1_000_000.0
+        for i in 0..<n { T[m][i] = objectiveCoeffs[i] }
+        for a in 0..<artCount { T[m][n + slackCount + a] = bigM }
+
+        var basis = [Int](repeating: -1, count: m)
+        artIdx = 0
+        for (r, row) in rows.enumerated() {
+            if row.needsArtificial { basis[r] = n + slackCount + artIdx; artIdx += 1 }
+            else { basis[r] = n + r }
+        }
+        for r in 0..<m where basis[r] >= n + slackCount {
+            for j in 0..<cols { T[m][j] -= bigM * T[r][j] }
+        }
+
+        var unbounded = false
+        for _ in 0..<2000 {
+            var pivCol = -1; var minRC = -1e-9
+            for j in 0..<(cols - 1) { if T[m][j] < minRC { minRC = T[m][j]; pivCol = j } }
+            guard pivCol >= 0 else { break }
+
+            var pivRow = -1; var minRatio = Double.infinity
+            for r in 0..<m {
+                guard T[r][pivCol] > 1e-10 else { continue }
+                let ratio = T[r][cols - 1] / T[r][pivCol]
+                if ratio < minRatio - 1e-12 { minRatio = ratio; pivRow = r }
+            }
+            guard pivRow >= 0 else { unbounded = true; break }
+
+            let piv = T[pivRow][pivCol]
+            for j in 0..<cols { T[pivRow][j] /= piv }
+            for r in 0...m {
+                guard r != pivRow else { continue }
+                let factor = T[r][pivCol]
+                guard abs(factor) > 1e-15 else { continue }
+                for j in 0..<cols { T[r][j] -= factor * T[pivRow][j] }
+            }
+            basis[pivRow] = pivCol
+        }
+
+        var x = [Double](repeating: 0, count: n)
+        for r in 0..<m { let b = basis[r]; if b < n { x[b] = T[r][cols - 1] } }
+        var feasible = !unbounded
+        for r in 0..<m where basis[r] >= n + slackCount {
+            if T[r][cols - 1] > 1e-6 { feasible = false }
+        }
+        for i in 0..<n { x[i] = max(0, x[i]) }
+        return (x, feasible)
+    }
+
+    /// Solves an LP whose objective is to maximise (or minimise) a single nutrient's value,
+    /// subject to all OTHER active constraints + ingredient/combination bounds. Used to find
+    /// the best achievable value for a constraint that can't be satisfied as a hard min/max,
+    /// and to identify which ingredient bounds are binding at that optimum.
+    static func solveSecondaryObjective(
+        ingredients: [SolverIngredient],
+        constraints: [SolverConstraint],
+        combinations: [SolverCombination] = [],
+        targetNutrientKey: String,
+        maximize: Bool
+    ) -> (value: Double, percentagesByCode: [String: Double], bindingMaxCodes: [String], bindingMinCodes: [String])? {
+        let active = normalizeForSecondary(ingredients)
+        guard !active.isEmpty else { return nil }
+        let sumMin = active.reduce(0) { $0 + $1.minPct }
+        let sumMax = active.reduce(0) { $0 + $1.maxPct }
+        guard sumMin <= 100 + 1e-6, sumMax >= 100 - 1e-6 else { return nil }
+
+        let n = active.count
+        let nutKeys = constraints.filter { $0.minValue != nil || $0.maxValue != nil }
+        let rows = secondaryRows(active: active, nutKeys: nutKeys, combinations: combinations)
+
+        var objective = [Double](repeating: 0, count: n)
+        for i in 0..<n {
+            let coeff = active[i].nutrients[targetNutrientKey] ?? 0
+            objective[i] = maximize ? -coeff : coeff   // simplex always minimises
+        }
+        let (x, feasible) = runSecondarySimplex(n: n, rows: rows, objectiveCoeffs: objective)
+        guard feasible else { return nil }
+
+        var pctByCode: [String: Double] = [:]
+        for i in 0..<n { pctByCode[active[i].code] = x[i] }
+        var value = 0.0
+        for i in 0..<n { value += (active[i].nutrients[targetNutrientKey] ?? 0) * x[i] / 100.0 }
+
+        var bindingMax: [String] = []
+        var bindingMin: [String] = []
+        for i in 0..<n {
+            if active[i].maxPct < 100 - 1e-9, abs(x[i] - active[i].maxPct) < 1e-4 { bindingMax.append(active[i].code) }
+            if active[i].minPct > 0, abs(x[i] - active[i].minPct) < 1e-4 { bindingMin.append(active[i].code) }
+        }
+        return (value, pctByCode, bindingMax, bindingMin)
+    }
+
+    /// Bisects to find the minimal relaxation of a single ingredient bound that makes
+    /// the full constraint set (including the originally-unsatisfiable one) feasible.
+    /// For `.maxPct`, searches upward from the current max toward `searchUpperBound`.
+    /// For `.minPct`, searches downward from the current min toward 0 (lowering a min
+    /// frees capacity for other ingredients — the relevant direction for relaxation).
+    static func minimalRelaxation(
+        ingredients: [SolverIngredient],
+        constraints: [SolverConstraint],
+        combinations: [SolverCombination] = [],
+        candidateCode: String,
+        candidateBound: BoundKind,
+        searchUpperBound: Double = 100.0
+    ) -> Double? {
+        guard let idx = ingredients.firstIndex(where: { $0.code == candidateCode }) else { return nil }
+        let base = ingredients[idx]
+
+        func withBound(_ value: Double) -> [SolverIngredient] {
+            var copy = ingredients
+            if candidateBound == .maxPct {
+                copy[idx] = SolverIngredient(code: base.code, name: base.name, priceTLPerTon: base.priceTLPerTon,
+                                             minPct: base.minPct, maxPct: value, nutrients: base.nutrients)
+            } else {
+                copy[idx] = SolverIngredient(code: base.code, name: base.name, priceTLPerTon: base.priceTLPerTon,
+                                             minPct: value, maxPct: base.maxPct, nutrients: base.nutrients)
+            }
+            return copy
+        }
+
+        if candidateBound == .maxPct {
+            var lo = base.maxPct
+            var hi = max(searchUpperBound, lo)
+            guard hi > lo else { return nil }
+            guard solve(ingredients: withBound(hi), constraints: constraints, combinations: combinations).isFeasible else { return nil }
+            for _ in 0..<20 {
+                let mid = (lo + hi) / 2
+                if solve(ingredients: withBound(mid), constraints: constraints, combinations: combinations).isFeasible { hi = mid } else { lo = mid }
+            }
+            return hi
+        } else {
+            var lo = 0.0
+            var hi = base.minPct
+            guard hi > lo else { return nil }
+            guard solve(ingredients: withBound(lo), constraints: constraints, combinations: combinations).isFeasible else { return nil }
+            for _ in 0..<20 {
+                let mid = (lo + hi) / 2
+                if solve(ingredients: withBound(mid), constraints: constraints, combinations: combinations).isFeasible { lo = mid } else { hi = mid }
+            }
+            return lo
+        }
+    }
+
+    /// For a single constraint that cannot be satisfied as a hard bound, computes the best
+    /// achievable value plus a cost-ranked list of candidate bound relaxations that would
+    /// make it satisfiable. Never mutates the caller's ingredient bounds — purely advisory.
+    static func buildShortfallReport(
+        ingredients: [SolverIngredient],
+        survivingConstraints: [SolverConstraint],
+        combinations: [SolverCombination] = [],
+        droppedConstraint: SolverConstraint
+    ) -> ConstraintShortfallReport? {
+        let maximize = droppedConstraint.minValue != nil
+        let target = droppedConstraint.minValue ?? droppedConstraint.maxValue ?? 0
+
+        guard let secondary = solveSecondaryObjective(
+            ingredients: ingredients, constraints: survivingConstraints, combinations: combinations,
+            targetNutrientKey: droppedConstraint.key, maximize: maximize
+        ) else { return nil }
+
+        let candidates: [(String, BoundKind)] =
+            secondary.bindingMaxCodes.map { ($0, BoundKind.maxPct) } +
+            secondary.bindingMinCodes.map { ($0, BoundKind.minPct) }
+
+        var suggestions: [BoundRelaxationSuggestion] = []
+        for (code, kind) in candidates {
+            guard let ing = ingredients.first(where: { $0.code == code }) else { continue }
+            let upper: Double = kind == .maxPct
+                ? min(100.0, combinations.first { $0.ingredientCodes.contains(code) }?.maxPct ?? 100.0)
+                : 100.0
+
+            guard let suggested = minimalRelaxation(
+                ingredients: ingredients,
+                constraints: survivingConstraints + [droppedConstraint],
+                combinations: combinations,
+                candidateCode: code,
+                candidateBound: kind,
+                searchUpperBound: upper
+            ) else { continue }
+
+            var testIngs = ingredients
+            if let idx = testIngs.firstIndex(where: { $0.code == code }) {
+                let b = testIngs[idx]
+                testIngs[idx] = kind == .maxPct
+                    ? SolverIngredient(code: b.code, name: b.name, priceTLPerTon: b.priceTLPerTon, minPct: b.minPct, maxPct: suggested, nutrients: b.nutrients)
+                    : SolverIngredient(code: b.code, name: b.name, priceTLPerTon: b.priceTLPerTon, minPct: suggested, maxPct: b.maxPct, nutrients: b.nutrients)
+            }
+            let testResult = solve(ingredients: testIngs, constraints: survivingConstraints + [droppedConstraint], combinations: combinations)
+            guard testResult.isFeasible else { continue }
+
+            suggestions.append(BoundRelaxationSuggestion(
+                ingredientCode: code, bound: kind,
+                currentValue: kind == .maxPct ? ing.maxPct : ing.minPct,
+                suggestedValue: suggested,
+                resultingCostPerTon: testResult.costPerTon
+            ))
+        }
+        suggestions.sort { $0.resultingCostPerTon < $1.resultingCostPerTon }
+
+        return ConstraintShortfallReport(
+            constraintKey:   droppedConstraint.key,
+            targetValue:     target,
+            achievableValue: secondary.value,
+            isMinConstraint: maximize,
+            suggestions:     suggestions
+        )
+    }
+
+    /// Replaces "drop the constraint and forget about it" with: for each dropped constraint,
+    /// push its value as far toward the target as the remaining constraints/bounds allow
+    /// (locking in each stage's achieved value before processing the next), then minimise
+    /// cost once at the end. `droppedInOrder` should be in the same priority order the caller
+    /// decided to sacrifice constraints (most-important-first).
+    static func solveLexicographic(
+        ingredients: [SolverIngredient],
+        hardConstraints: [SolverConstraint],
+        droppedInOrder: [SolverConstraint],
+        combinations: [SolverCombination] = []
+    ) -> (result: SolverResult, achievedValues: [String: Double]) {
+        var lockedExtra: [SolverConstraint] = []
+        var achieved: [String: Double] = [:]
+
+        for dropped in droppedInOrder {
+            let maximize = dropped.minValue != nil
+            guard let secondary = solveSecondaryObjective(
+                ingredients: ingredients,
+                constraints: hardConstraints + lockedExtra,
+                combinations: combinations,
+                targetNutrientKey: dropped.key,
+                maximize: maximize
+            ) else { continue }
+
+            achieved[dropped.key] = secondary.value
+            let tolerance = max(abs(secondary.value) * 0.005, 1e-3)
+            let lockedCon = maximize
+                ? SolverConstraint(key: dropped.key, minValue: secondary.value - tolerance, maxValue: nil)
+                : SolverConstraint(key: dropped.key, minValue: nil, maxValue: secondary.value + tolerance)
+
+            let test = solve(ingredients: ingredients, constraints: hardConstraints + lockedExtra + [lockedCon], combinations: combinations)
+            if test.isFeasible { lockedExtra.append(lockedCon) }
+        }
+
+        let finalResult = solve(ingredients: ingredients, constraints: hardConstraints + lockedExtra, combinations: combinations)
+        return (finalResult, achieved)
     }
 }
 

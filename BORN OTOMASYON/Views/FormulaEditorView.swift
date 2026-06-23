@@ -3,6 +3,12 @@ import SwiftData
 import Observation
 import UniformTypeIdentifiers
 
+// Σ(maxPct) < 100 durumunda kullanıcıya sunulan seçim bilgisi.
+struct Step2Info: Equatable {
+    let sumMaxPct:      Double
+    let shortfallPct:   Double
+}
+
 // MARK: - Observable ViewModel
 
 @Observable
@@ -21,6 +27,11 @@ final class FormulaEditorVM {
     var solveMessage:   String?
     var validationError: String?
     var selectedTab     = 0            // 0 = Hammaddeler, 1 = Besin Maddeleri
+
+    // ── Sınır bütünlüğü / öneri durumu ──────────────────────────────────────
+    var step1Warnings:     [String] = []           // max<min tespit edildi (otomatik düzeltme öncesi açık uyarı)
+    var pendingStep2Choice: Step2Info? = nil        // Σmax<100 — kullanıcı "Otomatik Çöz" / "Elle Düzenle" seçmeli
+    var shortfallReports:  [ConstraintShortfallReport] = []  // kısıt sağlanamadığında sınır gevşetme önerileri
 
     var showIngredientPicker  = false
     var showConstraintPicker  = false
@@ -153,9 +164,14 @@ final class FormulaEditorVM {
 
     // Solve LP — works with any LibEntry (FeedIngredient on main, IngSnap on background)
     // hardMaxByCode: aylık limit nedeniyle uygulanan maxPct kapları — autoRelaxed bunları aşamaz
-    func solve<T: LibEntry>(library: [T], hardMaxByCode: [String: Double] = [:]) {
-        isSolving    = true
-        solveMessage = nil
+    // autoRelaxStep2: Σmax<100 durumunda kullanıcı "Otomatik Çöz"ü onaylarsa true geçilir;
+    // aksi halde solve durur ve pendingStep2Choice set edilir — hiçbir sınır sessizce değişmez.
+    func solve<T: LibEntry>(library: [T], hardMaxByCode: [String: Double] = [:], autoRelaxStep2: Bool = false) {
+        isSolving         = true
+        solveMessage      = nil
+        step1Warnings     = []
+        pendingStep2Choice = nil
+        shortfallReports  = []
 
         // Save current solve cost as "previous" before overwriting
         if let current = lastSolve, current.isFeasible {
@@ -192,8 +208,12 @@ final class FormulaEditorVM {
                                     nutrients: nutrients)
         }
 
-        // ── Step 1: ensure maxPct >= minPct for every ingredient ─────────────
-        // (Happens when user sets a min% higher than the TXT-imported max%)
+        // ── Step 1: detect maxPct < minPct — warn explicitly, then still raise max to min ───
+        // (Happens when user sets a min% higher than the TXT-imported max%. The fix still
+        // applies so the LP can run, but it is now always surfaced via step1Warnings — never silent.)
+        for i in solverIngs where i.maxPct < i.minPct {
+            step1Warnings.append("❌ \(i.name): min %\(String(format:"%.2f", i.minPct)) > max %\(String(format:"%.2f", i.maxPct)) — max otomatik olarak min seviyesine yükseltildi, kalıcı çözüm için max'ı elle düzeltin")
+        }
         let minMaxFixed: [SolverIngredient] = solverIngs.map { i in
             guard i.maxPct < i.minPct else { return i }
             return SolverIngredient(code: i.code, name: i.name,
@@ -203,26 +223,36 @@ final class FormulaEditorVM {
                                     nutrients: i.nutrients)
         }
 
-        // ── Step 2: auto-relax maxPct if sum < 100 ───────────────────────────
+        // ── Step 2: Σmax < 100 — ask the user instead of silently scaling ────────
         // (Happens when TXT ingredients are removed and their pct-based maxPct no longer sums to 100)
         // ÖNEMLI: Aylık limit (hardMaxByCode) nedeniyle sum < 100 ise, ölçekleme bu limitleri aşamaz.
-        var autoRelaxed = false
+        var usedAutoRelaxStep2 = false
         let sumMaxSolver = minMaxFixed.reduce(0.0) { $0 + $1.maxPct }
         var readyIngs: [SolverIngredient]
         if sumMaxSolver < 100 - 1e-6 {
-            let scale = 100.0 / sumMaxSolver
-            readyIngs = minMaxFixed.map { i in
-                SolverIngredient(code: i.code, name: i.name,
-                                 priceTLPerTon: i.priceTLPerTon,
-                                 minPct: i.minPct,
-                                 maxPct: min(i.maxPct * scale, 100),
-                                 nutrients: i.nutrients)
+            if autoRelaxStep2 {
+                let scale = 100.0 / sumMaxSolver
+                readyIngs = minMaxFixed.map { i in
+                    SolverIngredient(code: i.code, name: i.name,
+                                     priceTLPerTon: i.priceTLPerTon,
+                                     minPct: i.minPct,
+                                     maxPct: min(i.maxPct * scale, 100),
+                                     nutrients: i.nutrients)
+                }
+                usedAutoRelaxStep2 = true
+            } else {
+                pendingStep2Choice = Step2Info(sumMaxPct: sumMaxSolver, shortfallPct: 100 - sumMaxSolver)
+                let msg = "❌ Hammadde max sınırlarının toplamı %\(String(format:"%.1f", sumMaxSolver)) < %100 — eksik %\(String(format:"%.1f", 100 - sumMaxSolver)) için hammadde max'larını artırın, veya \"Otomatik Çöz\"ü seçin."
+                lastSolve = BFSolveResult(percentagesByCode: [:], costPerTon: 0, nutrientValues: [:],
+                                          isFeasible: false, message: msg)
+                solveMessage = msg
+                isSolving    = false
+                return
             }
-            autoRelaxed = true
         } else {
             readyIngs = minMaxFixed
         }
-        // Aylık limit kaplarını autoRelaxed'ın üzerine yeniden uygula
+        // Aylık limit kaplarını otomatik genişletmenin üzerine yeniden uygula
         // → ölçekleme hiçbir zaman aylık limiti aşamaz
         if !hardMaxByCode.isEmpty {
             readyIngs = readyIngs.map { i in
@@ -268,7 +298,7 @@ final class FormulaEditorVM {
             var workingCons = filteredCons
 
             // Phase 1 — remove constraints that are individually infeasible
-            // (zero-coefficient rows or bounds beyond what any ingredient mix can reach)
+            // (no ingredient provides this nutrient at all — nothing to maximize toward)
             var soloInfeasible = IndexSet()
             for (i, con) in workingCons.enumerated() {
                 let solo = RationSolver.solve(ingredients: readyIngs, constraints: [con], combinations: solverCombinations)
@@ -287,7 +317,10 @@ final class FormulaEditorVM {
                 .map { $0.element }
             result = RationSolver.solve(ingredients: readyIngs, constraints: workingCons, combinations: solverCombinations)
 
-            // Phase 2 — remove interacting constraints one by one until feasible
+            // Phase 2 — determine which interacting constraints must be sacrificed, one at a
+            // time, in the same greedy order as before — but record them instead of just
+            // discarding, so their value can be recovered via the lexicographic fallback below.
+            var droppedOrder: [SolverConstraint] = []
             while !result.isFeasible && !workingCons.isEmpty {
                 var resolved = false
                 for i in stride(from: workingCons.count - 1, through: 0, by: -1) {
@@ -295,9 +328,7 @@ final class FormulaEditorVM {
                     testCons.remove(at: i)
                     let testResult = RationSolver.solve(ingredients: readyIngs, constraints: testCons, combinations: solverCombinations)
                     if testResult.isFeasible || testCons.isEmpty {
-                        let con  = workingCons[i]
-                        let name = constraints.first { $0.nutrientKey == con.key }?.resolvedDisplayName ?? con.key
-                        relaxedConMsgs.append("⚠️ \(name): diğer kısıtlarla birlikte sağlanamıyor")
+                        droppedOrder.append(workingCons[i])
                         workingCons = testCons
                         result      = testResult
                         resolved    = true
@@ -305,13 +336,31 @@ final class FormulaEditorVM {
                     }
                 }
                 if !resolved {
-                    // No single removal unblocks feasibility — drop all remaining
-                    for con in workingCons {
-                        let name = constraints.first { $0.nutrientKey == con.key }?.resolvedDisplayName ?? con.key
-                        relaxedConMsgs.append("⚠️ \(name): çözüm bulunamadı")
-                    }
+                    droppedOrder.append(contentsOf: workingCons)
                     result = RationSolver.solve(ingredients: readyIngs, constraints: [], combinations: solverCombinations)
                     workingCons = []
+                }
+            }
+
+            if !droppedOrder.isEmpty {
+                let (lexResult, achieved) = RationSolver.solveLexicographic(
+                    ingredients: readyIngs, hardConstraints: workingCons,
+                    droppedInOrder: droppedOrder, combinations: solverCombinations)
+                result = lexResult
+
+                for dropped in droppedOrder {
+                    let name = constraints.first { $0.nutrientKey == dropped.key }?.resolvedDisplayName ?? dropped.key
+                    if let achievedValue = achieved[dropped.key] {
+                        let target = dropped.minValue ?? dropped.maxValue ?? 0
+                        relaxedConMsgs.append("⚠️ \(name): hedef %\(String(format:"%.2f", target)), mevcut sınırlarla ulaşılabilen en iyi değer %\(String(format:"%.2f", achievedValue)) ile çözüldü")
+                        if let report = RationSolver.buildShortfallReport(
+                            ingredients: readyIngs, survivingConstraints: workingCons,
+                            combinations: solverCombinations, droppedConstraint: dropped) {
+                            shortfallReports.append(report)
+                        }
+                    } else {
+                        relaxedConMsgs.append("⚠️ \(name): çözüm bulunamadı")
+                    }
                 }
             }
         }
@@ -324,6 +373,7 @@ final class FormulaEditorVM {
             if reCheck.isFeasible {
                 result = reCheck
                 relaxedConMsgs = []
+                shortfallReports = []
             }
         }
 
@@ -405,11 +455,22 @@ final class FormulaEditorVM {
         } else if anyConstraintRelaxed {
             msgs.append("⚠️ Kısmi çözüm — bazı besin kısıtları sağlanamadı:")
             msgs.append(contentsOf: relaxedConMsgs)
+            for report in shortfallReports {
+                let name = constraints.first { $0.nutrientKey == report.constraintKey }?.resolvedDisplayName ?? report.constraintKey
+                for s in report.suggestions.prefix(3) {
+                    let ingName = readyIngs.first { $0.code == s.ingredientCode }?.name ?? s.ingredientCode
+                    let boundLabel = s.bound == .maxPct ? "max" : "min"
+                    msgs.append("   → \(name) için: \(ingName) \(boundLabel) %\(String(format:"%.2f", s.currentValue))→%\(String(format:"%.2f", s.suggestedValue)) yapılırsa maliyet \(String(format:"%.0f", s.resultingCostPerTon))₺/ton")
+                }
+            }
         } else {
             msgs.append("❌ \(result.message)")
         }
-        if autoRelaxed {
-            msgs.append("ℹ️ Bazı hammaddeler stoktan çıkarıldığı için max% sınırları otomatik genişletildi")
+        if usedAutoRelaxStep2 {
+            msgs.append("ℹ️ Hammadde max sınırlarının toplamı %100'ün altındaydı — kullanıcı onayıyla orantılı olarak genişletildi")
+        }
+        if !step1Warnings.isEmpty {
+            msgs.append(contentsOf: step1Warnings)
         }
         if !noPriceIngs.isEmpty {
             msgs.append("ℹ️ \(noPriceIngs.count) hammadde için fiyat yok — nominal 1₺/ton kullanıldı, maliyet tahmini değil: "
@@ -426,7 +487,8 @@ final class FormulaEditorVM {
             reducedCosts:       result.reducedCosts,
             costRangeIncreases: result.costRangeIncreases,
             shadowPricesMin:    result.shadowPricesMin,
-            shadowPricesMax:    result.shadowPricesMax
+            shadowPricesMax:    result.shadowPricesMax,
+            shortfallReports:   shortfallReports
         )
         solveMessage = finalMsg
         isSolving    = false
@@ -473,6 +535,22 @@ struct FormulaEditorView: View {
             .navigationTitle(formula == nil ? "Yeni Formül" : vm.name.isEmpty ? "Formül" : vm.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
+            .alert(
+                "Hammadde max sınırları %100'ün altında",
+                isPresented: Binding(
+                    get: { vm.pendingStep2Choice != nil },
+                    set: { if !$0 { vm.pendingStep2Choice = nil } }
+                )
+            ) {
+                Button("Otomatik Çöz") {
+                    Task { await solveAction(autoRelaxStep2: true) }
+                }
+                Button("Elle Düzenle", role: .cancel) { vm.pendingStep2Choice = nil }
+            } message: {
+                if let info = vm.pendingStep2Choice {
+                    Text("Max sınırların toplamı %\(String(format: "%.1f", info.sumMaxPct)) — eksik %\(String(format: "%.1f", info.shortfallPct)). Otomatik çöz, tüm hammaddelerin max'ını orantılı olarak büyütür. Elle düzenle ise hiçbir sınırı değiştirmez; ilgili hammaddelerin max'ını kendiniz artırmanız gerekir.")
+                }
+            }
             .sheet(isPresented: $vm.showIngredientPicker, onDismiss: {
                 vm.loadPricesFromLibrary(library)
                 vm.computeNutrients(library: library)
@@ -1110,7 +1188,7 @@ struct FormulaEditorView: View {
     }
 
     @MainActor
-    private func solveAction() async {
+    private func solveAction(autoRelaxStep2: Bool = false) async {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
                                         to: nil, from: nil, for: nil)
         await Task.yield()   // let UI update (dismiss keyboard) before starting
@@ -1124,11 +1202,14 @@ struct FormulaEditorView: View {
             let lastSolve:  BFSolveResult?   // needed to preserve previousCostPerTon
         }
         struct SolveOut: @unchecked Sendable {
-            let ings:      [BFIngredient]
-            let cons:      [BFConstraint]
-            let lastSolve: BFSolveResult?
-            let message:   String?
-            let prevCost:  Double?
+            let ings:               [BFIngredient]
+            let cons:               [BFConstraint]
+            let lastSolve:          BFSolveResult?
+            let message:            String?
+            let prevCost:           Double?
+            let step1Warnings:      [String]
+            let pendingStep2Choice: Step2Info?
+            let shortfallReports:   [ConstraintShortfallReport]
         }
 
         // Kullanıcının yazdığı fiyatları kütüphaneye aktar — libSnap'ten ÖNCE
@@ -1154,29 +1235,36 @@ struct FormulaEditorView: View {
             solver.totalKgStr   = input.totalKgStr
             solver.lastSolve    = input.lastSolve   // lets solve() compute previousCostPerTon
             solver.loadPricesFromLibrary(libSnap)
-            solver.solve(library: libSnap)
+            solver.solve(library: libSnap, autoRelaxStep2: autoRelaxStep2)
             return SolveOut(
-                ings:      solver.ingredients,
-                cons:      solver.constraints,
-                lastSolve: solver.lastSolve,
-                message:   solver.solveMessage,
-                prevCost:  solver.previousCostPerTon
+                ings:               solver.ingredients,
+                cons:               solver.constraints,
+                lastSolve:          solver.lastSolve,
+                message:            solver.solveMessage,
+                prevCost:           solver.previousCostPerTon,
+                step1Warnings:      solver.step1Warnings,
+                pendingStep2Choice: solver.pendingStep2Choice,
+                shortfallReports:   solver.shortfallReports
             )
         }.value
 
         // ── Sonuçları main thread'de VM'ye yaz ──────────────────────────────
-        vm.ingredients        = out.ings
-        vm.constraints        = out.cons
-        vm.lastSolve          = out.lastSolve
-        vm.solveMessage       = out.message
-        vm.previousCostPerTon = out.prevCost
-        vm.isSolving          = false
-        vm.selectedTab        = 2
+        vm.ingredients         = out.ings
+        vm.constraints         = out.cons
+        vm.lastSolve           = out.lastSolve
+        vm.solveMessage        = out.message
+        vm.previousCostPerTon  = out.prevCost
+        vm.step1Warnings       = out.step1Warnings
+        vm.pendingStep2Choice  = out.pendingStep2Choice
+        vm.shortfallReports    = out.shortfallReports
+        vm.isSolving           = false
+        if out.pendingStep2Choice == nil { vm.selectedTab = 2 }
 
         // ── LP sonuçlarını hemen SwiftData'ya kaydet ─────────────────────
         // Kullanıcı "Kaydet" basmadan gönderim yapsa bile sunucu çözüm
-        // değerlerini (mixPct toplamı = %100) görsün.
-        if let f = formula {
+        // değerlerini (mixPct toplamı = %100) görsün. Step2 bekliyorsa kaydetme —
+        // henüz geçerli bir çözüm yok.
+        if out.pendingStep2Choice == nil, let f = formula {
             vm.applyToFormula(f)
             try? modelContext.save()
         }
