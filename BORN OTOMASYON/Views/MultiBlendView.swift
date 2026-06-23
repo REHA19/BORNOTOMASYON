@@ -203,12 +203,22 @@ struct MultiBlendDetailView: View {
 
     // Arama metnine göre filtrelenmiş formüller — sadece görüntüleme/seçim listesinde kullanılır,
     // maliyet/üretim toplamları her zaman tüm groupFormulas üzerinden hesaplanır.
+    // Çözüm sonrası hatalı (solveResults[code]?.ok == false) formüller listenin başına taşınır —
+    // kullanıcı hatalı formülü aramak zorunda kalmasın. Hatasız formüller arasındaki sıra
+    // (formulaSort: tonaj/ad) değişmez (stable sort).
     private var displayedFormulas: [BlendFormula] {
         let q = formulaSearchText.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return groupFormulas }
-        return groupFormulas.filter {
-            $0.name.localizedCaseInsensitiveContains(q) ||
-            $0.code.localizedCaseInsensitiveContains(q)
+        let base = q.isEmpty
+            ? groupFormulas
+            : groupFormulas.filter {
+                $0.name.localizedCaseInsensitiveContains(q) ||
+                $0.code.localizedCaseInsensitiveContains(q)
+            }
+        guard !solveResults.isEmpty else { return base }
+        return base.sorted { lhs, rhs in
+            let lhsFailed = solveResults[lhs.code]?.ok == false
+            let rhsFailed = solveResults[rhs.code]?.ok == false
+            return lhsFailed && !rhsFailed
         }
     }
 
