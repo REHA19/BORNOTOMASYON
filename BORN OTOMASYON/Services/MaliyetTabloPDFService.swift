@@ -60,31 +60,45 @@ struct MaliyetTabloPDFService {
         let karPct:              Double
         let pesin:               Double   // ₺/çuval
         let lastPublishedPesin:  Double?  // ₺/çuval — son yayınlanan listeden
+        var brutKarPct:          Double? = nil   // (satış fiyatı ₺/ton − rasyon) / rasyon × 100
+        var yeniFiyat:           Double? = nil   // TL toplu ayarı uygulanmışsa önizlenen yeni fiyat
+        var yeniKarPct:          Double? = nil   // yeniFiyat'a karşılık gelen gerçek kar oranı
+        var oncekiKarlilikPct:   Double? = nil   // son yayınlanan fiyatın GÜNCEL maliyete göre kâr oranı
     }
 
     static func generateMaliyetTablosu(rows: [CostRow], brand: String) -> Data {
         let canvas = BornPDFCanvas()
+        let hasYeni = rows.contains { $0.yeniFiyat != nil }
         return canvas.render { c in
             c.banner(title: "Maliyet Tablosu", subtitle: brand)
             c.metaBox([("Tarih", dateStr()), ("Ürün Sayısı", "\(rows.count)")])
-            let cols: [(String, CGFloat)] = [
-                ("Kod", 42), ("Ürün", 145), ("Rasyon ₺/t", 60), ("Toplam ₺/t", 60),
-                ("Kar%", 32), ("Peşin ₺", 58), ("Önceki ₺", 58), ("Fark ₺", 66)
+            var cols: [(String, CGFloat)] = [
+                ("Kod", 38), ("Ürün", 112), ("Rasyon ₺/t", 48), ("Toplam ₺/t", 48),
+                ("Kar%", 26), ("B.Kar%", 30), ("Peşin ₺", 46), ("Önceki ₺", 46), ("Ö.Karlılık%", 38)
             ]
+            if hasYeni { cols += [("Yeni ₺", 46), ("Yeni Kar%", 36)] }
+            cols.append(("Fark ₺", hasYeni ? 38 : 60))
             c.tableHeader(cols)
             for (i, r) in rows.enumerated() {
                 let farkStr: String = r.lastPublishedPesin.map {
                     String(format: "%+.2f", r.pesin - $0)
                 } ?? "—"
-                c.tableRow([
+                var cells = [
                     r.code, r.name,
                     String(format: "%.0f", r.rasyon),
                     String(format: "%.0f", r.toplamMaliyet),
                     String(format: "%.1f", r.karPct),
+                    r.brutKarPct.map { String(format: "%.1f", $0) } ?? "—",
                     String(format: "%.2f", r.pesin),
                     r.lastPublishedPesin.map { String(format: "%.2f", $0) } ?? "—",
-                    farkStr
-                ], cols, idx: i)
+                    r.oncekiKarlilikPct.map { String(format: "%.1f", $0) } ?? "—"
+                ]
+                if hasYeni {
+                    cells.append(r.yeniFiyat.map { String(format: "%.2f", $0) } ?? "—")
+                    cells.append(r.yeniKarPct.map { String(format: "%.1f", $0) } ?? "—")
+                }
+                cells.append(farkStr)
+                c.tableRow(cells, cols, idx: i)
             }
         }
     }

@@ -5,7 +5,12 @@ import SwiftData
 //
 // Akış: ürün seç (serbest çoklu seçim) → TL tutar gir → Önizle (hesapla, henüz kaydetme) →
 // Kaydet (ProductPricingMeta.manualPesin'e kalıcı yaz) → PDF paylaş.
+// Önizleme, Maliyet Tablosu'ndaki gibi geniş/yatay kaydırmalı bir tablo olarak gösterilir:
+// her ürün için rasyon+gider+toplam maliyet, eski/yeni fiyat ve kar%, ve peşin/kredi kartı/
+// 30/60/90 gün vade baremlerinde hem çuval hem ton bazında fiyat + kar%.
 // "Eski peşin" hesabı FiyatListesiView.buildPriceSnaps() ile birebir aynı mantığı kullanır.
+// PDF raporu kasıtlı olarak sade kalır (eski/yeni/fark/son-liste-farkı) — 20+ sütunluk
+// vade/çuval/ton matrisi ekranda gösterilir, PDF'e basılmaz (okunaklılık için).
 
 struct TopluFiyatGuncellemeView: View {
     let rows:         [(formula: BlendFormula, meta: ProductPricingMeta?)]
@@ -23,6 +28,12 @@ struct TopluFiyatGuncellemeView: View {
 
     @Query(sort: \PriceListArchive.savedAt, order: .reverse) private var allArchives: [PriceListArchive]
 
+    // Vade baremleri — FiyatListesiView ile aynı AppStorage anahtarları (tek kaynak)
+    @AppStorage("pricing_vade_tek_cekim") private var vadeTekCekim: Double = 2.8
+    @AppStorage("pricing_vade_30gun")     private var vade30:       Double = 4.5
+    @AppStorage("pricing_vade_60gun")     private var vade60:       Double = 9.2
+    @AppStorage("pricing_vade_90gun")     private var vade90:       Double = 14.1
+
     @State private var selectedCodes: Set<String> = []
     @State private var deltaText:     String      = ""
     @State private var previewRows:   [BulkChangeRow] = []
@@ -31,13 +42,33 @@ struct TopluFiyatGuncellemeView: View {
     @State private var shareURL:      URL?  = nil
     @State private var showShare      = false
 
+    // Bir vade baremi için fiyat + kar% çifti (çuval cinsinden fiyat; ton fiyatı bagKg ile türetilir)
+    struct TierValue {
+        let cuval: Double
+        let ton:   Double
+        let karPct: Double
+    }
+
     struct BulkChangeRow: Identifiable {
-        let id = UUID()
-        let code:               String
-        let name:               String
-        let oldPesin:           Double
-        let newPesin:           Double
+        var id: String { code }
+        let code:          String
+        let name:          String
+        let rasyon:        Double   // ₺/ton
+        let giderToplam:   Double   // ₺/ton
+        let toplamMaliyet: Double   // ₺/ton
+        let bagKg:         Int
+        let oldPesinCuval: Double
+        let oldKarPct:     Double?  // son yayınlanan yoksa nil
+        let newPesinCuval: Double
+        let newKarPct:     Double
         let lastPublishedPesin: Double?
+
+        func tier(_ vadePct: Double, toplamMaliyet: Double, bagKg: Int) -> TierValue {
+            let cuval = newPesinCuval * (1 + vadePct / 100)
+            let ton   = cuval / Double(bagKg) * 1000
+            let kar   = (cuval / (toplamMaliyet * Double(bagKg) / 1000) - 1) * 100
+            return TierValue(cuval: cuval, ton: ton, karPct: kar)
+        }
     }
 
     private var deltaTL: Double {
@@ -48,18 +79,28 @@ struct TopluFiyatGuncellemeView: View {
         PriceListArchive.lastPublished(brand: brand, in: allArchives)
     }
 
+    private static func karPct(price: Double, toplamMaliyet: Double, bagKg: Int) -> Double {
+        guard toplamMaliyet > 0, bagKg > 0 else { return 0 }
+        return (price / (toplamMaliyet * Double(bagKg) / 1000) - 1) * 100
+    }
+
     // FiyatListesiView.buildPriceSnaps() ile aynı hesap — şu an geçerli (kaydedilmemiş) peşin fiyat
     private func currentPesin(_ row: (formula: BlendFormula, meta: ProductPricingMeta?)) -> Double {
+        calc(row).pesin0
+    }
+
+    private func calc(_ row: (formula: BlendFormula, meta: ProductPricingMeta?))
+        -> (rasyon: Double, toplam: Double, bagKg: Int, pesin0: Double) {
         let rasyon = row.formula.currentCostTL > 0 ? row.formula.currentCostTL : row.formula.recordedCostTL
         let effKar = (row.meta?.overrideKarPct ?? -1) >= 0 ? row.meta!.overrideKarPct : globalKarPct
         let bagKg  = row.meta?.bagKg ?? 50
-        let calc   = PricingCalc.calculate(
+        let c = PricingCalc.calculate(
             rasyon: rasyon, ipCuval: ipCuval, firePct: firePct,
             elektrik: elektrik, nakliye: nakliye, iscilik: iscilik,
             karPct: effKar, bagKg: bagKg, extraItems: extraItems
         )
         let manual = row.meta?.manualPesin ?? -1
-        return manual >= 0 ? manual : calc.pesin
+        return (rasyon, c.toplam, bagKg, manual >= 0 ? manual : c.pesin)
     }
 
     var body: some View {
@@ -125,17 +166,24 @@ struct TopluFiyatGuncellemeView: View {
                     }
                     .disabled(selectedCodes.isEmpty || deltaTL == 0)
                 } footer: {
-                    Text("Önizle, hesaplar ve aşağıda gösterir — henüz hiçbir şey kaydedilmez.")
+                    Text("Önizle, hesaplar ve aşağıda geniş tabloda gösterir — henüz hiçbir şey kaydedilmez.")
                         .font(.caption2)
                 }
 
                 if !previewRows.isEmpty {
                     Section {
-                        ForEach(previewRows) { r in previewRowView(r) }
+                        ScrollView(.horizontal, showsIndicators: true) {
+                            VStack(alignment: .leading, spacing: 0) {
+                                tableHeaderRow
+                                ForEach(Array(previewRows.enumerated()), id: \.element.id) { idx, r in
+                                    tableDataRow(r, alt: idx % 2 == 1)
+                                }
+                            }
+                        }
                     } header: {
-                        Text("Önizleme (\(previewRows.count) ürün)")
+                        Text("Önizleme (\(previewRows.count) ürün) — Peşin/Kredi Kartı/30-60-90 Gün, Çuval+Ton")
                     } footer: {
-                        Text("\"Liste Farkı\" sütunu, son yayınlanan (\(lastPublished?.revision ?? lastPublished?.period ?? "—")) fiyat listesine göre farkı gösterir.")
+                        Text("Son yayınlanan liste: \(lastPublished?.revision ?? lastPublished?.period ?? "—"). Eski Kar% ve Eski Fiyat, son yayınlanan listeye göre hesaplanır.")
                             .font(.caption2)
                     }
 
@@ -162,7 +210,7 @@ struct TopluFiyatGuncellemeView: View {
                                     Text("Oluşturuluyor…")
                                 } else {
                                     Image(systemName: "doc.richtext.fill").foregroundStyle(.orange)
-                                    Text("PDF Olarak Paylaş")
+                                    Text("PDF Olarak Paylaş (özet)")
                                 }
                             }
                         }
@@ -184,30 +232,87 @@ struct TopluFiyatGuncellemeView: View {
         }
     }
 
-    @ViewBuilder
-    private func previewRowView(_ r: BulkChangeRow) -> some View {
-        let fark = r.newPesin - r.oldPesin
-        let pct  = r.oldPesin > 0 ? fark / r.oldPesin * 100 : 0
-        VStack(alignment: .leading, spacing: 4) {
-            Text(r.name).font(.subheadline.bold())
-            HStack(spacing: 6) {
-                Text(String(format: "%.2f ₺", r.oldPesin)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
-                Text(String(format: "%.2f ₺", r.newPesin)).font(.subheadline.bold().monospacedDigit())
-                Text(String(format: "(%+.2f ₺, %+.1f%%)", fark, pct))
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(fark > 0 ? .red : fark < 0 ? .green : .secondary)
-            }
-            if let lp = r.lastPublishedPesin {
-                let listFark = r.newPesin - lp
-                Text(String(format: "Son listeye göre: %.2f ₺ → %+.2f ₺", lp, listFark))
-                    .font(.caption2).foregroundStyle(.indigo)
-            } else {
-                Text("Son yayınlanan listede yok").font(.caption2).foregroundStyle(.secondary)
-            }
+    // ── Geniş tablo ────────────────────────────────────────────────────────
+
+    private let wCode: CGFloat = 50, wName: CGFloat = 140, wMoney: CGFloat = 64, wKar: CGFloat = 48
+
+    private var tableHeaderRow: some View {
+        HStack(spacing: 0) {
+            headerCell("Kod", wCode)
+            headerCell("Ürün", wName, align: .leading)
+            headerCell("Rasyon ₺/t", wMoney)
+            headerCell("Gider ₺/t", wMoney)
+            headerCell("Toplam ₺/t", wMoney)
+            headerCell("Eski Çuval", wMoney)
+            headerCell("Eski Ton", wMoney)
+            headerCell("Eski Kar%", wKar)
+            tierHeader("Peşin")
+            tierHeader("Kredi K.")
+            tierHeader("30 Gün")
+            tierHeader("60 Gün")
+            tierHeader("90 Gün")
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 6)
+        .background(Color(.tertiarySystemGroupedBackground))
     }
+
+    @ViewBuilder
+    private func tierHeader(_ label: String) -> some View {
+        headerCell("\(label) Çuval", wMoney)
+        headerCell("\(label) Ton", wMoney)
+        headerCell("\(label) Kar%", wKar)
+    }
+
+    private func headerCell(_ text: String, _ width: CGFloat, align: TextAlignment = .center) -> some View {
+        Text(text).font(.caption2.bold()).foregroundStyle(.secondary)
+            .frame(width: width, alignment: align == .leading ? .leading : .center)
+            .multilineTextAlignment(align)
+    }
+
+    @ViewBuilder
+    private func tableDataRow(_ r: BulkChangeRow, alt: Bool) -> some View {
+        let pesinTier = r.tier(0, toplamMaliyet: r.toplamMaliyet, bagKg: r.bagKg)
+        let kkTier    = r.tier(vadeTekCekim, toplamMaliyet: r.toplamMaliyet, bagKg: r.bagKg)
+        let g30Tier   = r.tier(vade30, toplamMaliyet: r.toplamMaliyet, bagKg: r.bagKg)
+        let g60Tier   = r.tier(vade60, toplamMaliyet: r.toplamMaliyet, bagKg: r.bagKg)
+        let g90Tier   = r.tier(vade90, toplamMaliyet: r.toplamMaliyet, bagKg: r.bagKg)
+        HStack(spacing: 0) {
+            dataCell(r.code, wCode)
+            dataCell(r.name, wName, align: .leading)
+            dataCell(String(format: "%.0f", r.rasyon), wMoney)
+            dataCell(String(format: "%.0f", r.giderToplam), wMoney)
+            dataCell(String(format: "%.0f", r.toplamMaliyet), wMoney)
+            dataCell(String(format: "%.2f", r.oldPesinCuval), wMoney)
+            dataCell(String(format: "%.0f", r.oldPesinCuval / Double(r.bagKg) * 1000), wMoney)
+            dataCell(r.oldKarPct.map { String(format: "%.1f", $0) } ?? "—", wKar)
+            tierCells(pesinTier)
+            tierCells(kkTier)
+            tierCells(g30Tier)
+            tierCells(g60Tier)
+            tierCells(g90Tier)
+        }
+        .padding(.vertical, 4)
+        .background(alt ? Color(.systemGroupedBackground) : Color.clear)
+    }
+
+    @ViewBuilder
+    private func tierCells(_ t: TierValue) -> some View {
+        dataCell(String(format: "%.2f", t.cuval), wMoney, bold: true)
+        dataCell(String(format: "%.0f", t.ton), wMoney)
+        dataCell(String(format: "%.1f", t.karPct), wKar,
+                 color: t.karPct < 0 ? .red : .green)
+    }
+
+    private func dataCell(_ text: String, _ width: CGFloat, align: TextAlignment = .center,
+                          bold: Bool = false, color: Color = .primary) -> some View {
+        Text(text)
+            .font(bold ? .caption.bold().monospacedDigit() : .caption.monospacedDigit())
+            .foregroundStyle(color)
+            .frame(width: width, alignment: align == .leading ? .leading : .center)
+            .lineLimit(1)
+    }
+
+    // ── Hesaplama / kaydetme / paylaşma ────────────────────────────────────
 
     private func buildPreview() {
         let archive = lastPublished
@@ -216,12 +321,20 @@ struct TopluFiyatGuncellemeView: View {
         )
         previewRows = rows
             .filter { selectedCodes.contains($0.formula.code) }
-            .map { row in
-                let old = currentPesin(row)
+            .map { row -> BulkChangeRow in
+                let c = calc(row)
+                let lastPub = publishedByCode[row.formula.code]
+                let oldPesinCuval = lastPub ?? c.pesin0
+                let newPesinCuval = max(0, c.pesin0 + deltaTL)
+                let oldKar = lastPub.map { Self.karPct(price: $0, toplamMaliyet: c.toplam, bagKg: c.bagKg) }
+                let newKar = Self.karPct(price: newPesinCuval, toplamMaliyet: c.toplam, bagKg: c.bagKg)
                 return BulkChangeRow(
                     code: row.formula.code, name: row.formula.name,
-                    oldPesin: old, newPesin: max(0, old + deltaTL),
-                    lastPublishedPesin: publishedByCode[row.formula.code]
+                    rasyon: c.rasyon, giderToplam: c.toplam - c.rasyon, toplamMaliyet: c.toplam,
+                    bagKg: c.bagKg,
+                    oldPesinCuval: oldPesinCuval, oldKarPct: oldKar,
+                    newPesinCuval: newPesinCuval, newKarPct: newKar,
+                    lastPublishedPesin: lastPub
                 )
             }
         isSaved = false
@@ -231,10 +344,10 @@ struct TopluFiyatGuncellemeView: View {
         for r in previewRows {
             guard let row = rows.first(where: { $0.formula.code == r.code }) else { continue }
             if let meta = row.meta {
-                meta.manualPesin = r.newPesin
+                meta.manualPesin = r.newPesinCuval
             } else {
                 let m = ProductPricingMeta(formulaCode: r.code, brand: brand)
-                m.manualPesin = r.newPesin
+                m.manualPesin = r.newPesinCuval
                 context.insert(m)
             }
         }
@@ -247,7 +360,7 @@ struct TopluFiyatGuncellemeView: View {
         let pdfRows = previewRows.map {
             MaliyetTabloPDFService.BulkRow(
                 code: $0.code, name: $0.name,
-                oldPesin: $0.oldPesin, newPesin: $0.newPesin,
+                oldPesin: $0.oldPesinCuval, newPesin: $0.newPesinCuval,
                 lastPublishedPesin: $0.lastPublishedPesin
             )
         }

@@ -253,7 +253,9 @@ struct MaliyetlendirmeView: View {
                     extraItems:  extraItems
                 )
             }
-            .sheet(isPresented: $showTopluGuncelleme) {
+            // fullScreenCover (sheet değil): Mac'te (Designed for iPad/iPhone) .sheet küçük,
+            // yüzen bir pencere açar — bu iki ekran tüm pencereyi/ekranı kaplasın istendi.
+            .fullScreenCover(isPresented: $showTopluGuncelleme) {
                 TopluFiyatGuncellemeView(
                     rows:        rows,
                     brand:       selectedBrand,
@@ -263,14 +265,16 @@ struct MaliyetlendirmeView: View {
                     extraItems:  extraItems
                 )
             }
-            .sheet(isPresented: $showMaliyetTablosu) {
+            .fullScreenCover(isPresented: $showMaliyetTablosu) {
                 MaliyetTablosuView(
                     rows:        rows,
                     brand:       selectedBrand,
                     ipCuval:     ipCuval, firePct:  firePct,
                     elektrik:    elektrik, nakliye: nakliye,
                     iscilik:     iscilik, globalKarPct: karPct,
-                    extraItems:  extraItems
+                    label1: label1, label2: label2,
+                    label3: label3, label4: label4, label5: label5,
+                    giderKalemleri: aktifGiderler
                 )
             }
             .sheet(isPresented: $showAddGider) {
@@ -571,6 +575,10 @@ private struct PricingProductRow: View {
             karPct: effKar, bagKg: bagKg, extraItems: extraItems
         )
     }
+    // Diğer tüm ekranlarla (Maliyet Tablosu, Fiyat Listesi PDF, Toplu Güncelleme) aynı kural:
+    // manuel fiyat varsa onu göster, yoksa güncel çuval ağırlığına göre hesaplananı göster.
+    private var isManual: Bool { (meta?.manualPesin ?? -1) >= 0 }
+    private var pesin:    Double { isManual ? meta!.manualPesin : calc.pesin }
 
     private func fmt(_ v: Double) -> String {
         let n = NumberFormatter()
@@ -617,9 +625,16 @@ private struct PricingProductRow: View {
                 }
 
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(fmt(calc.pesin) + " ₺")
+                    Text(fmt(pesin) + " ₺")
                         .font(.title3.bold()).foregroundStyle(.orange)
-                    Text("Peşin Barem").font(.caption2).foregroundStyle(.secondary)
+                    HStack(spacing: 3) {
+                        Text("Peşin Barem").font(.caption2).foregroundStyle(.secondary)
+                        if isManual {
+                            Text("MANUEL").font(.caption2.bold()).foregroundStyle(.white)
+                                .padding(.horizontal, 4).padding(.vertical, 1)
+                                .background(.purple, in: Capsule())
+                        }
+                    }
                     if let m = meta, m.overrideKarPct >= 0 {
                         Text("KAR: %\(String(format: "%.0f", m.overrideKarPct))")
                             .font(.caption2).foregroundStyle(.purple)
@@ -683,6 +698,10 @@ struct ProductPricingMetaSheet: View {
     @State private var manualPesinStr:    String           = ""   // boş = hesaplanan
     @State private var logoImagePath: String  = ""
     @State private var logoImageData: Data?   = nil
+
+    // Çuval ağırlığı değişince, varsa eski ağırlığa göre girilmiş manuel fiyatı uyar/temizle
+    @State private var bagKgAtLoad:     Int  = 50
+    @State private var showBagKgWarning = false
 
     @Query(sort: \KategoriTanim.orderIndex) private var allKategoriTanimlar: [KategoriTanim]
 
@@ -904,6 +923,22 @@ struct ProductPricingMetaSheet: View {
                 }
             }
             .onAppear { loadExisting() }
+            .onChange(of: bagKg) { _, newValue in
+                guard newValue != bagKgAtLoad,
+                      !manualPesinStr.replacingOccurrences(of: ",", with: ".").isEmpty,
+                      Double(manualPesinStr.replacingOccurrences(of: ",", with: ".")) != nil
+                else { return }
+                showBagKgWarning = true
+            }
+            .alert("Çuval ağırlığı değişti", isPresented: $showBagKgWarning) {
+                Button("Manuel Fiyatı Temizle", role: .destructive) {
+                    manualPesinStr = ""
+                    bagKgAtLoad    = bagKg
+                }
+                Button("Böyle Bırak", role: .cancel) { bagKgAtLoad = bagKg }
+            } message: {
+                Text("Manuel peşin fiyat (\(manualPesinStr) ₺) eski çuval ağırlığına göre girilmiş olabilir ve yeni ağırlığa göre otomatik yeniden hesaplanmaz. Temizlerseniz fiyat, yeni ağırlığa (\(bagKg) kg) göre otomatik hesaplanır.")
+            }
         }
     }
 
@@ -913,6 +948,7 @@ struct ProductPricingMetaSheet: View {
         form           = m.form
         categoryGroup  = m.categoryGroup
         bagKg          = m.bagKg
+        bagKgAtLoad    = m.bagKg
         isVisible      = m.isVisible
         orderIndex     = m.orderIndex
         logoName       = m.logoName
