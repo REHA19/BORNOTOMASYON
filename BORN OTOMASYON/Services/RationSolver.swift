@@ -123,12 +123,16 @@ enum RationSolver {
             var coeffs: [Double]   // length = n (ingredient percents)
             var rhs:    Double
             var needsArtificial: Bool
+            var isEquality: Bool = false   // true = pure "=" row (artificial only, NO surplus)
         }
 
         var rows: [Row] = []
 
-        // 1. Sum = 100
-        rows.append(Row(coeffs: Array(repeating: 1.0, count: n), rhs: 100.0, needsArtificial: true))
+        // 1. Sum = 100 — TRUE equality: artificial only, no surplus column. A surplus here
+        // would let Σx = 100 + surplus (surplus≥0), i.e. silently allow Σx > 100 whenever
+        // that helps satisfy other constraints — exactly the "%103.77 toplam" bug. Equality
+        // rows must never get a free surplus/slack variable.
+        rows.append(Row(coeffs: Array(repeating: 1.0, count: n), rhs: 100.0, needsArtificial: true, isEquality: true))
 
         // 2. x[i] ≤ max[i]  (slack added later)
         for i in 0..<n {
@@ -191,7 +195,12 @@ enum RationSolver {
             let base = r * cols
             for j in 0..<n { T[base + j] = row.coeffs[j] }
             let sCol = n + r
-            if row.needsArtificial {
+            if row.isEquality {
+                // Pure "=" row: artificial only, sCol left at 0 (no surplus/slack variable).
+                T[base + n + m + artIdx] = 1
+                basis[r]             = n + m + artIdx
+                artIdx += 1
+            } else if row.needsArtificial {
                 T[base + sCol]       = -1
                 T[base + n + m + artIdx] = 1
                 basis[r]             = n + m + artIdx
@@ -354,6 +363,7 @@ extension RationSolver {
         var coeffs: [Double]
         var rhs:    Double
         var needsArtificial: Bool
+        var isEquality: Bool = false   // true = pure "=" row (artificial only, NO surplus)
     }
 
     private static func normalizeForSecondary(_ ingredients: [SolverIngredient]) -> [SolverIngredient] {
@@ -368,7 +378,7 @@ extension RationSolver {
                                        combinations: [SolverCombination]) -> [SecRow] {
         let n = active.count
         var rows: [SecRow] = []
-        rows.append(SecRow(coeffs: Array(repeating: 1.0, count: n), rhs: 100.0, needsArtificial: true))
+        rows.append(SecRow(coeffs: Array(repeating: 1.0, count: n), rhs: 100.0, needsArtificial: true, isEquality: true))
         for i in 0..<n {
             var c = [Double](repeating: 0, count: n); c[i] = 1
             rows.append(SecRow(coeffs: c, rhs: active[i].maxPct, needsArtificial: false))
@@ -405,7 +415,11 @@ extension RationSolver {
         for (r, row) in rows.enumerated() {
             for j in 0..<n { T[r][j] = row.coeffs[j] }
             let sCol = n + r
-            if row.needsArtificial {
+            if row.isEquality {
+                let aCol = n + slackCount + artIdx
+                T[r][aCol] = 1
+                artIdx += 1
+            } else if row.needsArtificial {
                 T[r][sCol] = -1
                 let aCol = n + slackCount + artIdx
                 T[r][aCol] = 1
@@ -423,7 +437,7 @@ extension RationSolver {
         var basis = [Int](repeating: -1, count: m)
         artIdx = 0
         for (r, row) in rows.enumerated() {
-            if row.needsArtificial { basis[r] = n + slackCount + artIdx; artIdx += 1 }
+            if row.isEquality || row.needsArtificial { basis[r] = n + slackCount + artIdx; artIdx += 1 }
             else { basis[r] = n + r }
         }
         for r in 0..<m where basis[r] >= n + slackCount {

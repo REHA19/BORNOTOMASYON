@@ -27,6 +27,8 @@ struct MaliyetlendirmeView: View {
     @State private var showSiralama      = false
     @State private var showBrandYonetim  = false
     @State private var showKatYonetim    = false
+    @State private var showTopluGuncelleme = false
+    @State private var showMaliyetTablosu  = false
 
     // Dinamik marka listesi — tekrar eden isimleri çıkar
     private var brands: [String] {
@@ -71,6 +73,15 @@ struct MaliyetlendirmeView: View {
     private var label4: String { aktifBrandDef?.giderLabel4 ?? "Nakliye"       }
     private var label5: String { aktifBrandDef?.giderLabel5 ?? "İşçilik"       }
 
+    // Kategori adından PDF'teki (PricingPDFService) kategori sırasına bakar — ekrandaki
+    // sıranın PDF'le her zaman aynı olmasını sağlar. Tanımsız/bilinmeyen kategori en sona gider.
+    private func categoryOrder(_ categoryGroup: String?) -> Int {
+        guard let categoryGroup, !categoryGroup.isEmpty,
+              let idx = aktifKategoriler.firstIndex(where: { $0.name == categoryGroup })
+        else { return Int.max }
+        return aktifKategoriler[idx].orderIndex
+    }
+
     private var rows: [(formula: BlendFormula, meta: ProductPricingMeta?)] {
         let metaByCode = Dictionary(metas.map { ($0.formulaCode, $0) },
                                     uniquingKeysWith: { first, _ in first })
@@ -80,7 +91,14 @@ struct MaliyetlendirmeView: View {
                 let brand = metaByCode[f.code]?.brand ?? "Alapala"
                 return brand == selectedBrand
             }
-            .sorted { (metaByCode[$0.code]?.orderIndex ?? 999) < (metaByCode[$1.code]?.orderIndex ?? 999) }
+            // PricingPDFService ile birebir aynı sıralama: önce kategori sırası, sonra
+            // kategori içindeki orderIndex — ekran ile PDF/Fiyat Listesi her zaman eşleşsin.
+            .sorted {
+                let lhsMeta = metaByCode[$0.code], rhsMeta = metaByCode[$1.code]
+                let lCat = categoryOrder(lhsMeta?.categoryGroup), rCat = categoryOrder(rhsMeta?.categoryGroup)
+                if lCat != rCat { return lCat < rCat }
+                return (lhsMeta?.orderIndex ?? 999) < (rhsMeta?.orderIndex ?? 999)
+            }
             .map { ($0, metaByCode[$0.code]) }
     }
 
@@ -183,6 +201,12 @@ struct MaliyetlendirmeView: View {
                             Button { showFiyatDegisim = true } label: {
                                 Label("Fiyat Değişim Raporu", systemImage: "chart.line.uptrend.xyaxis")
                             }
+                            Button { showTopluGuncelleme = true } label: {
+                                Label("Toplu Fiyat Güncelleme", systemImage: "arrow.up.arrow.down.circle")
+                            }
+                            Button { showMaliyetTablosu = true } label: {
+                                Label("Maliyet Tablosu", systemImage: "tablecells")
+                            }
                         } label: {
                             Image(systemName: "ellipsis.circle")
                         }
@@ -223,6 +247,26 @@ struct MaliyetlendirmeView: View {
             .sheet(isPresented: $showIskontoAnaliz) {
                 IskontoAnalizView(
                     rows:        rows,
+                    ipCuval:     ipCuval, firePct:  firePct,
+                    elektrik:    elektrik, nakliye: nakliye,
+                    iscilik:     iscilik, globalKarPct: karPct,
+                    extraItems:  extraItems
+                )
+            }
+            .sheet(isPresented: $showTopluGuncelleme) {
+                TopluFiyatGuncellemeView(
+                    rows:        rows,
+                    brand:       selectedBrand,
+                    ipCuval:     ipCuval, firePct:  firePct,
+                    elektrik:    elektrik, nakliye: nakliye,
+                    iscilik:     iscilik, globalKarPct: karPct,
+                    extraItems:  extraItems
+                )
+            }
+            .sheet(isPresented: $showMaliyetTablosu) {
+                MaliyetTablosuView(
+                    rows:        rows,
+                    brand:       selectedBrand,
                     ipCuval:     ipCuval, firePct:  firePct,
                     elektrik:    elektrik, nakliye: nakliye,
                     iscilik:     iscilik, globalKarPct: karPct,

@@ -179,9 +179,20 @@ final class FormulaEditorVM {
         }
 
         // ── Build solver ingredients ──────────────────────────────────────────
+        // Aynı hammadde kodu birden fazla satırda aktif olabilir (örn. yeniden
+        // içe aktarma sonrası kopya satır). LP'ye HER koddan tek değişken girer —
+        // aksi halde aynı kod iki ayrı karar değişkeni gibi çözülür ve sonuç
+        // dictionary'de üst üste yazılırken görüntülenen toplam %100'ü aşar.
+        // dupCodeFirstIndex: kod → ingredients dizisindeki İLK aktif satırın index'i.
+        // Sonuç sadece bu ilk satıra yazılır; varsa diğer kopya satırlar 0'a çekilir.
+        var dupCodeFirstIndex: [String: Int] = [:]
+        for (idx, ing) in ingredients.enumerated() where ing.isActive && ing.hasStock {
+            if dupCodeFirstIndex[ing.code] == nil { dupCodeFirstIndex[ing.code] = idx }
+        }
         var noPriceIngs: [String] = []
-        let solverIngs: [SolverIngredient] = ingredients.compactMap { ing -> SolverIngredient? in
+        let solverIngs: [SolverIngredient] = ingredients.enumerated().compactMap { idx, ing -> SolverIngredient? in
             guard ing.isActive, ing.hasStock else { return nil }
+            guard dupCodeFirstIndex[ing.code] == idx else { return nil }  // kopya satırı LP'ye girmez
             let lib = IngredientMatcher.find(code: ing.code, name: ing.name, in: library)
             var nutrients: [String: Double] = [:]
             for def in allNutrientDefs {
@@ -206,6 +217,21 @@ final class FormulaEditorVM {
                                     priceTLPerTon: price,
                                     minPct: ing.minPct, maxPct: ing.maxPct,
                                     nutrients: nutrients)
+        }
+
+        // ── Aktif hammaddelerin min% toplamı kontrolü ────────────────────────
+        // Σmin ≤ %100 (1000 kg) ise çözüme her zaman izin ver — LP'nin Σx=100
+        // eşitliği zaten sonucu %99.99–%100 aralığında sabitler, ekstra bir
+        // engelleme YOK. Σmin > %100 ise tek anlamlı çözüm yolu min'leri
+        // düşürmektir — bunu açıkça söyle ve dur.
+        let sumMinActive = solverIngs.reduce(0.0) { $0 + $1.minPct }
+        if sumMinActive > 100 + 1e-6 {
+            let msg = "❌ Aktif hammaddelerin min% toplamı %\(String(format:"%.2f", sumMinActive)) (\(String(format:"%.0f", sumMinActive / 100.0 * totalKg)) kg) — %100'ü (\(String(format:"%.0f", totalKg)) kg) aşıyor. Çözüm için bazı hammaddelerin min% değerini düşürün."
+            lastSolve = BFSolveResult(percentagesByCode: [:], costPerTon: 0, nutrientValues: [:],
+                                      isFeasible: false, message: msg)
+            solveMessage = msg
+            isSolving    = false
+            return
         }
 
         // ── Step 1: detect maxPct < minPct — warn explicitly, then still raise max to min ───
@@ -386,8 +412,14 @@ final class FormulaEditorVM {
         )
 
         // ── Write results back ────────────────────────────────────────────────
+        // Kopya kod satırları (dupCodeFirstIndex'te ilk olmayanlar) LP'ye girmedi —
+        // değer SADECE ilk satıra yazılır, diğer kopyalar 0'a çekilir. Aksi halde
+        // aynı koddaki iki satır da aynı % değerini gösterip toplamı %100'ün
+        // üzerine taşırdı (örn. %103.77 gibi yanlış sonuçların kök nedeni).
         for i in 0..<ingredients.count {
-            let pct = result.percentagesByCode[ingredients[i].code] ?? 0
+            let code = ingredients[i].code
+            let isFirstOccurrence = dupCodeFirstIndex[code] == i
+            let pct = isFirstOccurrence ? (result.percentagesByCode[code] ?? 0) : 0
             ingredients[i].previousMixPct = ingredients[i].mixPct
             ingredients[i].mixPct         = pct
         }
@@ -410,10 +442,12 @@ final class FormulaEditorVM {
             }
 
             // 2. Weighted-average using LP result percentages
+            // Kopya kod satırları atlanır (dupCodeFirstIndex) — aksi halde aynı kodun
+            // % değeri iki kez toplanıp besin değeri %100'ün üzerine taşardı.
             var total    = 0.0
             var hasData  = false
-            for ing in ingredients {
-                guard ing.isActive else { continue }
+            for (idx, ing) in ingredients.enumerated() {
+                guard ing.isActive, dupCodeFirstIndex[ing.code] == idx else { continue }
                 let pct = lpPct[ing.code] ?? 0
                 guard pct > 0 else { continue }
                 let lib = IngredientMatcher.find(code: ing.code, name: ing.name, in: library)
@@ -430,8 +464,8 @@ final class FormulaEditorVM {
             // 3. Weighted-average using the ORIGINAL (TXT) mixPct saved before LP overwrote them
             var total2   = 0.0
             var hasData2 = false
-            for ing in ingredients {
-                guard ing.isActive else { continue }
+            for (idx, ing) in ingredients.enumerated() {
+                guard ing.isActive, dupCodeFirstIndex[ing.code] == idx else { continue }
                 let pct = originalMixPct[ing.code] ?? 0
                 guard pct > 0 else { continue }
                 let lib = IngredientMatcher.find(code: ing.code, name: ing.name, in: library)
@@ -681,13 +715,19 @@ struct FormulaEditorView: View {
                         .font(.subheadline)
                 }
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .trailing, spacing: 2) {
                     Text("Parti (kg)").font(.caption2).foregroundStyle(.secondary)
                     TextField("1000", text: $vm.totalKgStr)
                         .keyboardType(.numberPad)
                         .multilineTextAlignment(.trailing)
                         .font(.subheadline)
                         .frame(minWidth: 60, maxWidth: 90)
+                    if vm.lastSolve != nil {
+                        let achievedKg = vm.solveSum / 100.0 * vm.totalKg
+                        Text(String(format: "Çözüm: %.0f kg", achievedKg))
+                            .font(.caption2.bold())
+                            .foregroundStyle(abs(vm.solveSum - 100) <= 0.01 ? .green : .red)
+                    }
                 }
             }
             .padding(.horizontal, 16)
