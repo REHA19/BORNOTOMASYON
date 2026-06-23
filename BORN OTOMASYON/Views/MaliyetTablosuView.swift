@@ -44,8 +44,15 @@ struct MaliyetTablosuView: View {
 
     // Sütun sırası — ok butonlarıyla değiştirilir, cihazda kalıcı saklanır.
     // String key'ler kullanılır çünkü gider kalemi sütunları markaya göre dinamiktir.
-    @AppStorage("maliyet_tablosu_column_order_v2") private var columnOrderRaw: String = ""
-    @State private var columnOrder: [String] = []
+    @AppStorage("maliyet_tablosu_column_order_v2")   private var columnOrderRaw:  String = ""
+    @AppStorage("maliyet_tablosu_hidden_columns_v1") private var hiddenColumnsRaw: String = ""
+    @State private var columnOrder:   [String]    = []
+    @State private var hiddenColumns: Set<String> = []
+    @State private var showColumnPicker = false
+
+    // PDF'e özel sütun seçimi — ekrandaki gizleme durumundan bağımsız, sadece bu paylaşım için
+    @State private var showPDFColumnPicker = false
+    @State private var pdfHiddenColumns: Set<String> = []
 
     struct CostRow: Identifiable {
         var id: String { code }   // kararlı kimlik — inline TextField'ların odağı her render'da sıfırlanmasın
@@ -173,6 +180,17 @@ struct MaliyetTablosuView: View {
                 }
 
                 Section {
+                    Button {
+                        showColumnPicker = true
+                    } label: {
+                        Label("Sütunları Göster/Gizle", systemImage: "rectangle.lefthalf.inset.filled.arrow.left")
+                    }
+                } footer: {
+                    Text("\(visibleColumnOrder.count)/\(columnOrder.count) sütun görünüyor.")
+                        .font(.caption2)
+                }
+
+                Section {
                     ScrollView(.horizontal, showsIndicators: true) {
                         VStack(alignment: .leading, spacing: 0) {
                             tableHeaderRow
@@ -204,7 +222,8 @@ struct MaliyetTablosuView: View {
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        sharePDF()
+                        pdfHiddenColumns    = hiddenColumns
+                        showPDFColumnPicker = true
                     } label: {
                         if isGenerating { ProgressView().scaleEffect(0.8) }
                         else { Image(systemName: "doc.richtext.fill").foregroundStyle(.orange) }
@@ -215,8 +234,33 @@ struct MaliyetTablosuView: View {
             .sheet(isPresented: $showShare) {
                 if let url = shareURL { ShareSheet(url: url) }
             }
-            .onAppear { loadColumnOrder() }
+            .sheet(isPresented: $showColumnPicker) {
+                ColumnVisibilitySheet(
+                    title: "Sütunları Göster/Gizle",
+                    message: "Gizlenen sütunlar hem ekranda hem varsayılan PDF paylaşımında görünmez.",
+                    columnOrder: columnOrder,
+                    titleFor: title(for:),
+                    hidden: $hiddenColumns,
+                    onDone: saveHiddenColumns
+                )
+            }
+            .sheet(isPresented: $showPDFColumnPicker) {
+                ColumnVisibilitySheet(
+                    title: "PDF'de Görünecek Sütunlar",
+                    message: "Sütunlar sığmazsa rapor otomatik olarak yatay düzene geçer ve tam sığacak şekilde ölçeklenir.",
+                    columnOrder: columnOrder,
+                    titleFor: title(for:),
+                    hidden: $pdfHiddenColumns,
+                    confirmLabel: "PDF Oluştur ve Paylaş",
+                    onDone: sharePDF
+                )
+            }
+            .onAppear { loadColumnOrder(); loadHiddenColumns() }
         }
+    }
+
+    private var visibleColumnOrder: [String] {
+        columnOrder.filter { !hiddenColumns.contains($0) }
     }
 
     // ── Sütun tanımları (dinamik — marka gider kalemlerine göre değişir) ───
@@ -238,6 +282,17 @@ struct MaliyetTablosuView: View {
 
     private func saveColumnOrder() {
         columnOrderRaw = columnOrder.joined(separator: ",")
+    }
+
+    private func loadHiddenColumns() {
+        let valid = Set(defaultColumnKeys())
+        hiddenColumns = Set(hiddenColumnsRaw.split(separator: ",").map(String.init))
+            .intersection(valid)
+            .subtracting(["kod", "urun"])   // kimlik sütunları her zaman görünür
+    }
+
+    private func saveHiddenColumns() {
+        hiddenColumnsRaw = hiddenColumns.joined(separator: ",")
     }
 
     private func moveColumn(_ key: String, by offset: Int) {
@@ -287,7 +342,7 @@ struct MaliyetTablosuView: View {
 
     private var tableHeaderRow: some View {
         HStack(spacing: 0) {
-            ForEach(columnOrder, id: \.self) { key in headerCell(key) }
+            ForEach(visibleColumnOrder, id: \.self) { key in headerCell(key) }
         }
         .padding(.vertical, 4)
         .background(Color(.tertiarySystemGroupedBackground))
@@ -314,7 +369,7 @@ struct MaliyetTablosuView: View {
     @ViewBuilder
     private func tableDataRow(_ r: CostRow, alt: Bool) -> some View {
         HStack(spacing: 0) {
-            ForEach(columnOrder, id: \.self) { key in cell(for: key, row: r) }
+            ForEach(visibleColumnOrder, id: \.self) { key in cell(for: key, row: r) }
         }
         .padding(.vertical, 4)
         .background(alt ? Color(.systemGroupedBackground) : Color.clear)
@@ -426,22 +481,75 @@ struct MaliyetTablosuView: View {
         let pdfRows = costRows.map {
             MaliyetTabloPDFService.CostRow(
                 code: $0.code, name: $0.name, rasyon: $0.rasyon,
-                toplamMaliyet: $0.toplamMaliyet, karPct: $0.karPct, pesin: $0.pesin,
-                lastPublishedPesin: $0.lastPublishedPesin,
-                brutKarPct: $0.brutKarPct,
+                ipCuval: $0.ipCuval, fire: $0.fire, elektrik: $0.elektrik,
+                nakliye: $0.nakliye, iscilik: $0.iscilik, giderValues: $0.giderValues,
+                toplamMaliyet: $0.toplamMaliyet, karPct: $0.karPct, brutKarPct: $0.brutKarPct,
+                pesin: $0.pesin, lastPublishedPesin: $0.lastPublishedPesin,
                 yeniFiyat: bulkDeltaTL != 0 ? $0.yeniFiyat : nil,
                 yeniKarPct: bulkDeltaTL != 0 ? $0.yeniKarPct : nil,
                 oncekiKarlilikPct: $0.oncekiKarlilikPct
             )
         }
+        let selectedColumns = columnOrder.filter { !pdfHiddenColumns.contains($0) }
         let capturedBrand = brand
+        let l1 = label1, l2 = label2, l3 = label3, l4 = label4, l5 = label5
         Task.detached(priority: .userInitiated) {
-            let data = MaliyetTabloPDFService.generateMaliyetTablosu(rows: pdfRows, brand: capturedBrand)
+            let data = MaliyetTabloPDFService.generateMaliyetTablosu(
+                rows: pdfRows, brand: capturedBrand, columns: selectedColumns,
+                label1: l1, label2: l2, label3: l3, label4: l4, label5: l5
+            )
             let url  = PricingPDFService.writeToTemp(data: data, filename: "MaliyetTablosu")
             await MainActor.run {
                 isGenerating = false
                 shareURL     = url
                 showShare    = url != nil
+            }
+        }
+    }
+}
+
+// MARK: - Sütun görünürlük seçim sayfası (göster/gizle + PDF'e özel seçim için ortak)
+
+private struct ColumnVisibilitySheet: View {
+    let title:       String
+    let message:     String
+    let columnOrder: [String]
+    let titleFor:    (String) -> String
+    @Binding var hidden: Set<String>
+    var confirmLabel: String = "Tamam"
+    let onDone: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    private let alwaysVisible: Set<String> = ["kod", "urun"]
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(columnOrder, id: \.self) { key in
+                        let forced = alwaysVisible.contains(key)
+                        Toggle(titleFor(key), isOn: Binding(
+                            get: { forced || !hidden.contains(key) },
+                            set: { isOn in
+                                guard !forced else { return }
+                                if isOn { hidden.remove(key) } else { hidden.insert(key) }
+                            }
+                        ))
+                        .disabled(forced)
+                    }
+                } footer: {
+                    Text(message).font(.caption2)
+                }
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Kapat") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(confirmLabel) { onDone(); dismiss() }.fontWeight(.semibold)
+                }
             }
         }
     }
