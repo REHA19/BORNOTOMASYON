@@ -1,17 +1,21 @@
-// Mirrors a subset of Backend/Sources/App/Models/FeedIngredient.swift —
-// the full model has ~142 nutrient fields; only the ones editable from this
-// first web UI pass are listed here. Extra server fields pass through
-// untouched since these are just TS shapes, not runtime validators.
+export interface NutrientDef {
+  key: string;
+  displayName: string;
+  unit: string;
+}
+
+// Core fields are typed; the ~104 nutrient fields (dryMatter, crudeProtein,
+// calcium, lysine, ...) are accessed dynamically via the index signature,
+// driven by NutrientDef keys fetched from GET /api/nutrient-defs — mirrors
+// Backend/Sources/App/Models/FeedIngredient.swift without duplicating its
+// full field list here.
 export interface Material {
   id?: string;
   code: string;
   name: string;
   priceTL: number | null;
   isAvailable: boolean;
-  crudeProtein?: number | null;
-  crudeFat?: number | null;
-  crudeFiber?: number | null;
-  dryMatter?: number | null;
+  [nutrientKey: string]: string | number | boolean | null | undefined;
 }
 
 export interface BFIngredient {

@@ -15,6 +15,18 @@ struct MaterialController: RouteCollection {
         materials.post(use: create)
         materials.put(":materialID", use: update)
         materials.delete(":materialID", use: delete)
+
+        // Any logged-in user can read the nutrient key/displayName/unit list —
+        // used to build both the materials form and the formula constraint
+        // picker, so it isn't gated behind the "hammadde" menu key specifically.
+        routes.grouped("api", "nutrient-defs")
+            .grouped(JWTBearerAuthenticator())
+            .get(use: nutrientDefs)
+    }
+
+    @Sendable
+    func nutrientDefs(req: Request) async throws -> [NutrientDef] {
+        allNutrientDefs
     }
 
     @Sendable

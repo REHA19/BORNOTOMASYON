@@ -1,20 +1,21 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { apiFetch, ApiError } from "../lib/api";
-import type { Material } from "../lib/types";
+import type { Material, NutrientDef } from "../lib/types";
 
 const emptyForm: Material = {
   code: "",
   name: "",
   priceTL: null,
   isAvailable: true,
-  crudeProtein: null,
 };
 
 export default function Materials() {
   const [materials, setMaterials] = useState<Material[]>([]);
+  const [nutrientDefs, setNutrientDefs] = useState<NutrientDef[]>([]);
   const [form, setForm] = useState<Material>(emptyForm);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [nutrientFilter, setNutrientFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -27,6 +28,17 @@ export default function Materials() {
   }
 
   useEffect(load, []);
+  useEffect(() => {
+    apiFetch<NutrientDef[]>("/nutrient-defs").then(setNutrientDefs).catch(() => {});
+  }, []);
+
+  const filteredDefs = useMemo(() => {
+    const q = nutrientFilter.trim().toLocaleLowerCase("tr");
+    if (!q) return nutrientDefs;
+    return nutrientDefs.filter(
+      (d) => d.displayName.toLocaleLowerCase("tr").includes(q) || d.key.toLocaleLowerCase("tr").includes(q)
+    );
+  }, [nutrientDefs, nutrientFilter]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -60,60 +72,97 @@ export default function Materials() {
     }
   }
 
+  function setNutrient(key: string, value: string) {
+    setForm({ ...form, [key]: value === "" ? null : Number(value) });
+  }
+
   return (
-    <div style={{ fontFamily: "system-ui, sans-serif", padding: 32, maxWidth: 900 }}>
+    <div style={{ fontFamily: "system-ui, sans-serif", padding: 32, maxWidth: 1000 }}>
       <p>
         <Link to="/">← Panel</Link>
       </p>
       <h1>Hammaddeler</h1>
 
-      <form onSubmit={handleSubmit} style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "16px 0", alignItems: "end" }}>
-        <label>
-          Kod
-          <input required value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} style={inputStyle} />
-        </label>
-        <label>
-          İsim
-          <input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} style={inputStyle} />
-        </label>
-        <label>
-          Fiyat (₺/ton)
+      <form onSubmit={handleSubmit} style={{ margin: "16px 0" }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "end", marginBottom: 12 }}>
+          <label>
+            Kod
+            <input required value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} style={inputStyle} />
+          </label>
+          <label>
+            İsim
+            <input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} style={inputStyle} />
+          </label>
+          <label>
+            Fiyat (₺/ton)
+            <input
+              type="number"
+              value={(form.priceTL as number | null) ?? ""}
+              onChange={(e) => setForm({ ...form, priceTL: e.target.value === "" ? null : Number(e.target.value) })}
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <input
+              type="checkbox"
+              checked={form.isAvailable}
+              onChange={(e) => setForm({ ...form, isAvailable: e.target.checked })}
+            />
+            Stokta var
+          </label>
+        </div>
+
+        <details open={!!editingId}>
+          <summary style={{ cursor: "pointer", fontWeight: 600, margin: "8px 0" }}>
+            Besin Değerleri ({nutrientDefs.length} alan) — genişletmek için tıklayın
+          </summary>
           <input
-            type="number"
-            value={form.priceTL ?? ""}
-            onChange={(e) => setForm({ ...form, priceTL: e.target.value === "" ? null : Number(e.target.value) })}
-            style={inputStyle}
+            placeholder="Besin değeri ara (örn. lizin, kalsiyum, enerji...)"
+            value={nutrientFilter}
+            onChange={(e) => setNutrientFilter(e.target.value)}
+            style={{ ...inputStyle, width: "100%", margin: "8px 0" }}
           />
-        </label>
-        <label>
-          Ham Protein (%)
-          <input
-            type="number"
-            value={form.crudeProtein ?? ""}
-            onChange={(e) => setForm({ ...form, crudeProtein: e.target.value === "" ? null : Number(e.target.value) })}
-            style={inputStyle}
-          />
-        </label>
-        <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          <input
-            type="checkbox"
-            checked={form.isAvailable}
-            onChange={(e) => setForm({ ...form, isAvailable: e.target.checked })}
-          />
-          Stokta var
-        </label>
-        <button type="submit">{editingId ? "Güncelle" : "Ekle"}</button>
-        {editingId && (
-          <button
-            type="button"
-            onClick={() => {
-              setForm(emptyForm);
-              setEditingId(null);
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+              gap: 8,
+              maxHeight: 400,
+              overflowY: "auto",
+              border: "1px solid #eee",
+              padding: 8,
+              borderRadius: 8,
             }}
           >
-            İptal
-          </button>
-        )}
+            {filteredDefs.map((def) => (
+              <label key={def.key} style={{ fontSize: 13 }}>
+                {def.displayName} {def.unit && `(${def.unit})`}
+                <input
+                  type="number"
+                  step="any"
+                  value={(form[def.key] as number | null) ?? ""}
+                  onChange={(e) => setNutrient(def.key, e.target.value)}
+                  style={{ ...inputStyle, width: "100%" }}
+                />
+              </label>
+            ))}
+          </div>
+        </details>
+
+        <div style={{ marginTop: 12 }}>
+          <button type="submit">{editingId ? "Güncelle" : "Ekle"}</button>{" "}
+          {editingId && (
+            <button
+              type="button"
+              onClick={() => {
+                setForm(emptyForm);
+                setEditingId(null);
+              }}
+            >
+              İptal
+            </button>
+          )}
+        </div>
       </form>
 
       {error && <p style={{ color: "#c0392b" }}>{error}</p>}
@@ -137,7 +186,7 @@ export default function Materials() {
                 <td>{m.code}</td>
                 <td>{m.name}</td>
                 <td>{m.priceTL ?? "-"}</td>
-                <td>{m.crudeProtein ?? "-"}</td>
+                <td>{(m.crudeProtein as number | null) ?? "-"}</td>
                 <td>{m.isAvailable ? "Evet" : "Hayır"}</td>
                 <td>
                   <button onClick={() => startEdit(m)}>Düzenle</button>{" "}

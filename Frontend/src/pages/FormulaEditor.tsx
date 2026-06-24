@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { apiFetch, ApiError } from "../lib/api";
 import { sendFormulaToFactory } from "../lib/factorySend";
-import type { BFConstraint, BFIngredient, Formula, Material } from "../lib/types";
+import type { BFConstraint, BFIngredient, Formula, Material, NutrientDef } from "../lib/types";
 
 function newIngredient(code: string, name: string): BFIngredient {
   return {
@@ -19,12 +19,12 @@ function newIngredient(code: string, name: string): BFIngredient {
   };
 }
 
-function newConstraint(): BFConstraint {
+function newConstraint(def: NutrientDef): BFConstraint {
   return {
     id: crypto.randomUUID(),
-    nutrientKey: "crudeProtein",
-    displayName: "Ham Protein",
-    unit: "%",
+    nutrientKey: def.key,
+    displayName: def.displayName,
+    unit: def.unit,
     isActive: true,
     showInResult: true,
     minValue: null,
@@ -36,7 +36,9 @@ export default function FormulaEditor() {
   const { id } = useParams<{ id: string }>();
   const [formula, setFormula] = useState<Formula | null>(null);
   const [materials, setMaterials] = useState<Material[]>([]);
+  const [nutrientDefs, setNutrientDefs] = useState<NutrientDef[]>([]);
   const [pickCode, setPickCode] = useState("");
+  const [pickNutrientKey, setPickNutrientKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSolving, setIsSolving] = useState(false);
 
@@ -56,6 +58,7 @@ export default function FormulaEditor() {
   useEffect(load, [id]);
   useEffect(() => {
     apiFetch<Material[]>("/materials").then(setMaterials).catch(() => {});
+    apiFetch<NutrientDef[]>("/nutrient-defs").then(setNutrientDefs).catch(() => {});
   }, []);
   useEffect(() => {
     if (formula && !customName) setCustomName(formula.name);
@@ -81,7 +84,10 @@ export default function FormulaEditor() {
   }
 
   function addConstraint() {
-    setFormula({ ...formula!, constraints: [...formula!.constraints, newConstraint()] });
+    const def = nutrientDefs.find((d) => d.key === pickNutrientKey);
+    if (!def || formula!.constraints.some((c) => c.nutrientKey === def.key)) return;
+    setFormula({ ...formula!, constraints: [...formula!.constraints, newConstraint(def)] });
+    setPickNutrientKey("");
   }
 
   function updateConstraint(idx: number, patch: Partial<BFConstraint>) {
@@ -204,13 +210,23 @@ export default function FormulaEditor() {
       </table>
 
       <h2>Besin Kısıtları</h2>
-      <button onClick={addConstraint} style={{ marginBottom: 8 }}>
-        + Kısıt Ekle
-      </button>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <select value={pickNutrientKey} onChange={(e) => setPickNutrientKey(e.target.value)}>
+          <option value="">Besin değeri seçin...</option>
+          {nutrientDefs.map((def) => (
+            <option key={def.key} value={def.key}>
+              {def.displayName} {def.unit && `(${def.unit})`}
+            </option>
+          ))}
+        </select>
+        <button onClick={addConstraint} disabled={!pickNutrientKey}>
+          + Kısıt Ekle
+        </button>
+      </div>
       <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 24 }}>
         <thead>
           <tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
-            <th>Besin Anahtarı</th>
+            <th>Besin Değeri</th>
             <th>Min</th>
             <th>Max</th>
             <th>Sonuç</th>
@@ -221,11 +237,7 @@ export default function FormulaEditor() {
           {formula.constraints.map((con, idx) => (
             <tr key={con.id} style={{ borderBottom: "1px solid #eee" }}>
               <td>
-                <input
-                  value={con.nutrientKey}
-                  onChange={(e) => updateConstraint(idx, { nutrientKey: e.target.value, displayName: e.target.value })}
-                  placeholder="örn: crudeProtein"
-                />
+                {con.displayName} {con.unit && `(${con.unit})`}
               </td>
               <td>
                 <input

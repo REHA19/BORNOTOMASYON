@@ -1,4 +1,5 @@
 import Foundation
+import Vapor
 
 // MARK: - Solver Input/Output
 
@@ -397,7 +398,7 @@ extension FeedIngredient {
 
 // MARK: - Available nutrient definitions for the constraint picker
 
-struct NutrientDef: Identifiable {
+struct NutrientDef: Identifiable, Codable, Content {
     let key:         String
     let displayName: String
     let unit:        String
