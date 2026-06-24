@@ -13,6 +13,7 @@ public func configure(_ app: Application) async throws {
     app.migrations.add(CreateUserMenuAccess())
     app.migrations.add(CreateFeedIngredient())
     app.migrations.add(CreateBlendFormula())
+    app.migrations.add(CreateMultiBlendGroup())
     app.migrations.add(SeedAdminUser())
 
     let jwtSecret = Environment.get("JWT_SECRET") ?? "change-me-in-production"

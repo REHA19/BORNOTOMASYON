@@ -18,6 +18,8 @@ export default function Materials() {
   const [nutrientFilter, setNutrientFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importResult, setImportResult] = useState<string | null>(null);
 
   function load() {
     setIsLoading(true);
@@ -76,12 +78,54 @@ export default function Materials() {
     setForm({ ...form, [key]: value === "" ? null : Number(value) });
   }
 
+  async function handleFileImport(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+
+    setIsImporting(true);
+    setImportResult(null);
+    setError(null);
+    try {
+      const buffer = await file.arrayBuffer();
+      // Factory export tool writes Windows-1254 (Turkish) encoded TSV files,
+      // not UTF-8 — decoding as UTF-8 here would mangle every Turkish letter.
+      const content = new TextDecoder("windows-1254").decode(buffer);
+      const result = await apiFetch<{ created: number; updated: number; failed: number; errors: string[] }>(
+        "/materials/import",
+        { method: "POST", body: JSON.stringify({ content }) }
+      );
+      setImportResult(
+        `${result.created} eklendi, ${result.updated} güncellendi, ${result.failed} başarısız.` +
+          (result.errors.length ? ` Hatalar: ${result.errors.join("; ")}` : "")
+      );
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Dosya içe aktarılamadı");
+    } finally {
+      setIsImporting(false);
+    }
+  }
+
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", padding: 32, maxWidth: 1000 }}>
       <p>
         <Link to="/">← Panel</Link>
       </p>
       <h1>Hammaddeler</h1>
+
+      <div style={{ padding: 16, background: "#f4f5f7", borderRadius: 8, marginBottom: 16 }}>
+        <label style={{ fontWeight: 600 }}>
+          Dosyadan Toplu İçe Aktar (TXT/TSV)
+          <input type="file" accept=".txt,.tsv" onChange={handleFileImport} disabled={isImporting} style={{ display: "block", marginTop: 8 }} />
+        </label>
+        <p style={{ fontSize: 13, color: "#888" }}>
+          Fabrika rapor aracından alınan "HAMMADDE...txt" formatındaki dosyayı seçin — aynı kod ile mevcut hammadde
+          varsa güncellenir, yoksa yeni eklenir.
+        </p>
+        {isImporting && <p>Aktarılıyor...</p>}
+        {importResult && <p>{importResult}</p>}
+      </div>
 
       <form onSubmit={handleSubmit} style={{ margin: "16px 0" }}>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "end", marginBottom: 12 }}>

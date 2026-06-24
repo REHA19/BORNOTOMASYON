@@ -5,6 +5,8 @@ import Dashboard from "./pages/Dashboard";
 import Materials from "./pages/Materials";
 import Formulas from "./pages/Formulas";
 import FormulaEditor from "./pages/FormulaEditor";
+import MultiBlends from "./pages/MultiBlends";
+import MultiBlendDetail from "./pages/MultiBlendDetail";
 import type { ReactNode } from "react";
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
@@ -48,6 +50,22 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <FormulaEditor />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/multiblend"
+            element={
+              <ProtectedRoute>
+                <MultiBlends />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/multiblend/:id"
+            element={
+              <ProtectedRoute>
+                <MultiBlendDetail />
               </ProtectedRoute>
             }
           />

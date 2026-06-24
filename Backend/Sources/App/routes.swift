@@ -7,4 +7,5 @@ func routes(_ app: Application) throws {
     try app.register(collection: AdminController())
     try app.register(collection: FormulaController())
     try app.register(collection: MaterialController())
+    try app.register(collection: MultiBlendController())
 }

@@ -22,9 +22,12 @@ export default function Dashboard() {
         <Link to="/formulas" style={navLinkStyle}>
           Formüller
         </Link>
+        <Link to="/multiblend" style={navLinkStyle}>
+          MultiBlend
+        </Link>
       </nav>
       <p style={{ color: "#888", marginTop: 24 }}>
-        MultiBlend, fiyat takibi, raporlar gibi diğer menüler sonraki fazlarda eklenecek.
+        Stok, üretim cetveli, maliyetlendirme gibi diğer menüler sonraki fazlarda eklenecek.
       </p>
     </div>
   );

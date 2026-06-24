@@ -66,6 +66,26 @@ export interface BFCombination {
   maxKg?: number | null;
 }
 
+export interface MultiBlendFormulaEntry {
+  code: string;
+  name: string;
+  tons: number;
+  liveCostPerTon: number | null;
+  snapshotCostPerTon: number | null;
+  snapshotTons: number | null;
+}
+
+export interface MultiBlendGroup {
+  id: string;
+  name: string;
+  orderIndex: number;
+  version: number;
+  productionSnapshotAt: string | null;
+  stokYokCodes: string[];
+  monthlyIngLimits: Record<string, { minTons?: number | null; maxTons?: number | null }>;
+  entries: MultiBlendFormulaEntry[];
+}
+
 export interface Formula {
   id: string;
   code: string;
