@@ -149,6 +149,14 @@ struct FormulaController: RouteCollection {
         )
         if result.isFeasible {
             formula.recordedCostTL = result.costPerTon
+            // Write the solved mix% back onto each ingredient — the solver
+            // result only carried percentagesByCode separately before this,
+            // so the ingredient table always showed 0% regardless of solve.
+            formula.ingredients = formula.ingredients.map { ing in
+                var updated = ing
+                updated.mixPct = result.percentagesByCode[ing.code] ?? 0
+                return updated
+            }
         }
         formula.version += 1
         try await formula.save(on: req.db)

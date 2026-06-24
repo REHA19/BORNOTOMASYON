@@ -174,6 +174,7 @@ export default function FormulaEditor() {
           <tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
             <th>Kod</th>
             <th>İsim</th>
+            <th>Fiyat (₺/ton)</th>
             <th>Min %</th>
             <th>Max %</th>
             <th>Sonuç %</th>
@@ -181,32 +182,52 @@ export default function FormulaEditor() {
           </tr>
         </thead>
         <tbody>
-          {formula.ingredients.map((ing, idx) => (
-            <tr key={ing.id} style={{ borderBottom: "1px solid #eee" }}>
-              <td>{ing.code}</td>
-              <td>{ing.name}</td>
-              <td>
-                <input
-                  type="number"
-                  style={{ width: 70 }}
-                  value={ing.minPct}
-                  onChange={(e) => updateIngredient(idx, { minPct: Number(e.target.value) })}
-                />
-              </td>
-              <td>
-                <input
-                  type="number"
-                  style={{ width: 70 }}
-                  value={ing.maxPct}
-                  onChange={(e) => updateIngredient(idx, { maxPct: Number(e.target.value) })}
-                />
-              </td>
-              <td>{ing.mixPct.toFixed(2)}</td>
-              <td>
-                <button onClick={() => removeIngredient(idx)}>Çıkar</button>
-              </td>
-            </tr>
-          ))}
+          {/* En çok kullanılan hammadde en üstte — çözüm sonrası okunabilirlik için */}
+          {formula.ingredients
+            .map((ing, idx) => ({ ing, idx }))
+            .sort((a, b) => b.ing.mixPct - a.ing.mixPct)
+            .map(({ ing, idx }) => {
+              const libraryPrice = materials.find((m) => m.code === ing.code)?.priceTL as number | null | undefined;
+              return (
+                <tr key={ing.id} style={{ borderBottom: "1px solid #eee" }}>
+                  <td>{ing.code}</td>
+                  <td>{ing.name}</td>
+                  <td>
+                    <input
+                      type="number"
+                      style={{ width: 90 }}
+                      placeholder={libraryPrice != null ? String(libraryPrice) : ""}
+                      value={ing.overridePriceTLPerTon ?? ""}
+                      onChange={(e) =>
+                        updateIngredient(idx, {
+                          overridePriceTLPerTon: e.target.value === "" ? null : Number(e.target.value),
+                        })
+                      }
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="number"
+                      style={{ width: 70 }}
+                      value={ing.minPct}
+                      onChange={(e) => updateIngredient(idx, { minPct: Number(e.target.value) })}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="number"
+                      style={{ width: 70 }}
+                      value={ing.maxPct}
+                      onChange={(e) => updateIngredient(idx, { maxPct: Number(e.target.value) })}
+                    />
+                  </td>
+                  <td>{ing.mixPct.toFixed(2)}</td>
+                  <td>
+                    <button onClick={() => removeIngredient(idx)}>Çıkar</button>
+                  </td>
+                </tr>
+              );
+            })}
         </tbody>
       </table>
 
