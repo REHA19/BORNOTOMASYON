@@ -2,11 +2,12 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { apiFetch, ApiError } from "../lib/api";
 import { sendFormulaToFactory } from "../lib/factorySend";
+import { newUUID } from "../lib/uuid";
 import type { BFConstraint, BFIngredient, Formula, Material, NutrientDef } from "../lib/types";
 
 function newIngredient(code: string, name: string): BFIngredient {
   return {
-    id: crypto.randomUUID(),
+    id: newUUID(),
     code,
     name,
     isActive: true,
@@ -21,7 +22,7 @@ function newIngredient(code: string, name: string): BFIngredient {
 
 function newConstraint(def: NutrientDef): BFConstraint {
   return {
-    id: crypto.randomUUID(),
+    id: newUUID(),
     nutrientKey: def.key,
     displayName: def.displayName,
     unit: def.unit,
