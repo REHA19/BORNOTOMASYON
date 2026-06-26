@@ -78,7 +78,7 @@ struct SingleBlendListView: View {
             }
             .sheet(isPresented: $showPasteSheet) {
                 if let source = clipboard {
-                    PasteFormulaSheet(source: source) { newCode, newName in
+                    PasteFormulaSheet(source: source, existingCodes: Set(formulas.map(\.code))) { newCode, newName in
                         pasteFormula(source: source, code: newCode, name: newName)
                     }
                 }
@@ -350,8 +350,9 @@ struct SingleBlendListView: View {
 // MARK: - Yapıştır Sheet (yeni isim ve kod girişi)
 
 private struct PasteFormulaSheet: View {
-    let source:    BlendFormula
-    let onConfirm: (String, String) -> Void   // (code, name)
+    let source:        BlendFormula
+    var existingCodes: Set<String> = []
+    let onConfirm:      (String, String) -> Void   // (code, name)
 
     @Environment(\.dismiss) private var dismiss
 
@@ -361,9 +362,13 @@ private struct PasteFormulaSheet: View {
 
     enum Field { case code, name }
 
+    private var trimmedCode: String { newCode.trimmingCharacters(in: .whitespaces) }
+    private var codeTaken:   Bool   { existingCodes.contains(trimmedCode) }
+
     private var canSave: Bool {
-        !newCode.trimmingCharacters(in: .whitespaces).isEmpty &&
-        !newName.trimmingCharacters(in: .whitespaces).isEmpty
+        !trimmedCode.isEmpty &&
+        !newName.trimmingCharacters(in: .whitespaces).isEmpty &&
+        !codeTaken
     }
 
     var body: some View {
@@ -384,6 +389,10 @@ private struct PasteFormulaSheet: View {
                             .multilineTextAlignment(.trailing)
                             .textInputAutocapitalization(.characters)
                             .focused($focusedField, equals: .code)
+                    }
+                    if codeTaken {
+                        Text("Bu kod zaten kullanılıyor — başka bir kod girin.")
+                            .font(.caption).foregroundStyle(.red)
                     }
                     HStack {
                         Text("Yeni Ad")

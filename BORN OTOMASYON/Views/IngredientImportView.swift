@@ -16,6 +16,7 @@ struct IngredientImportView: View {
     @State private var saveAlert:        SaveAlert?
     @State private var sortOption:       SortOption = .nameAsc
     @State private var selectedTab:      LibTab     = .all
+    @State private var duplicateSource:  FeedIngredient? = nil
 
     private enum SortOption: String, CaseIterable, Identifiable {
         case nameAsc  = "İsme Göre (A→Z)"
@@ -66,6 +67,14 @@ struct IngredientImportView: View {
             )
             .sheet(isPresented: $showAddIngredient) {
                 EditIngredientView(ingredient: nil)
+            }
+            .sheet(item: $duplicateSource) { source in
+                DuplicateIngredientSheet(
+                    source: source,
+                    existingCodes: Set(saved.map(\.code))
+                ) { newCode, newName in
+                    duplicateIngredient(source: source, code: newCode, name: newName)
+                }
             }
             .overlay {
                 if isImporting || isSaving {
@@ -188,6 +197,21 @@ struct IngredientImportView: View {
             ForEach(items) { item in
                 NavigationLink(destination: IngredientDetailView(saved: item)) {
                     IngredientSavedRow(item: item)
+                }
+                .contextMenu {
+                    Button {
+                        duplicateSource = item
+                    } label: {
+                        Label("Kopyala", systemImage: "doc.on.doc")
+                    }
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button {
+                        duplicateSource = item
+                    } label: {
+                        Label("Kopyala", systemImage: "doc.on.doc")
+                    }
+                    .tint(.blue)
                 }
             }
         }
@@ -316,6 +340,17 @@ struct IngredientImportView: View {
             }
         }
     }
+
+    // MARK: - Kopyalama (besin değerleri aynı, yeni kod + ad ile yeni kayıt)
+
+    private func duplicateIngredient(source: FeedIngredient, code: String, name: String) {
+        var candidate = FeedIngredientCandidate(saved: source)
+        candidate.code = code
+        candidate.name = name
+        let copy = FeedIngredient(from: candidate)
+        modelContext.insert(copy)
+        try? modelContext.save()
+    }
 }
 
 // MARK: - Alert model
@@ -323,6 +358,85 @@ struct IngredientImportView: View {
 private struct SaveAlert: Identifiable {
     let id = UUID()
     let duplicateCount: Int
+}
+
+// MARK: - Kopyala Sheet (yeni kod + ad girişi, mevcut kodla çakışma kontrolü)
+
+private struct DuplicateIngredientSheet: View {
+    let source:        FeedIngredient
+    let existingCodes: Set<String>
+    let onConfirm:     (String, String) -> Void   // (code, name)
+
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var newCode: String = ""
+    @State private var newName: String = ""
+    @FocusState private var focusedField: Field?
+
+    enum Field { case code, name }
+
+    private var trimmedCode: String { newCode.trimmingCharacters(in: .whitespaces) }
+    private var trimmedName: String { newName.trimmingCharacters(in: .whitespaces) }
+    private var codeTaken:   Bool   { existingCodes.contains(trimmedCode) }
+
+    private var canSave: Bool {
+        !trimmedCode.isEmpty && !trimmedName.isEmpty && !codeTaken
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    LabeledContent("Kaynak Hammadde", value: source.name)
+                    LabeledContent("Kaynak Kod",      value: source.code)
+                } header: { Text("Kopyalanacak Hammadde") }
+
+                Section {
+                    HStack {
+                        Text("Yeni Kod")
+                        Spacer()
+                        TextField("örn. 317-2", text: $newCode)
+                            .multilineTextAlignment(.trailing)
+                            .textInputAutocapitalization(.characters)
+                            .focused($focusedField, equals: .code)
+                    }
+                    if codeTaken {
+                        Text("Bu kod zaten kullanılıyor — başka bir kod girin.")
+                            .font(.caption).foregroundStyle(.red)
+                    }
+                    HStack {
+                        Text("Yeni Ad")
+                        Spacer()
+                        TextField("örn. MISIR 58 (Kopya)", text: $newName)
+                            .multilineTextAlignment(.trailing)
+                            .textInputAutocapitalization(.words)
+                            .focused($focusedField, equals: .name)
+                    }
+                } header: { Text("Yeni Hammadde Bilgileri") }
+                 footer: { Text("Tüm besin değerleri kaynak hammaddeden otomatik kopyalanır.") }
+            }
+            .navigationTitle("Hammadde Kopyala")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("İptal") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Oluştur") {
+                        onConfirm(trimmedCode, trimmedName)
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(!canSave)
+                }
+            }
+            .onAppear {
+                newCode = source.code + "-2"
+                newName = source.name + " (Kopya)"
+                focusedField = .code
+            }
+        }
+    }
 }
 
 // MARK: - Önizleme satırı (henüz kaydedilmemiş)
