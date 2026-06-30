@@ -1555,18 +1555,41 @@ private struct IngredientEditorRow: View {
 
 
     private var overridePriceField: some View {
+        OverridePriceField(value: $ing.overridePriceTLPerTon)
+    }
+}
+
+// Tuş başına binding yazımını engeller — sadece blur'da commit eder
+private struct OverridePriceField: View {
+    @Binding var value: Double?
+    @State private var text: String = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
         HStack(spacing: 3) {
             Text("₺/ton").font(.caption2).foregroundStyle(.secondary)
-            let binding = Binding<String>(
-                get: { ing.overridePriceTLPerTon.map { String(format: "%.0f", $0) } ?? "" },
-                set: { ing.overridePriceTLPerTon = Double($0) }
-            )
-            TextField("Kütüph.", text: binding)
+            TextField("Kütüph.", text: $text)
                 .keyboardType(.numberPad)
                 .multilineTextAlignment(.trailing)
                 .frame(minWidth: 50, maxWidth: 80)
                 .font(.caption.bold())
+                .focused($isFocused)
+                .onChange(of: isFocused) { _, nowFocused in
+                    if !nowFocused { commit() }
+                }
         }
+        .onAppear { load() }
+        .onChange(of: value) { _, _ in if !isFocused { load() } }
+    }
+
+    private func load() {
+        text = value.map { String(format: "%.0f", $0) } ?? ""
+    }
+
+    private func commit() {
+        let clean = text.trimmingCharacters(in: .whitespaces)
+        value = clean.isEmpty ? nil : Double(clean)
+        if value == nil && !clean.isEmpty { load() }
     }
 }
 
