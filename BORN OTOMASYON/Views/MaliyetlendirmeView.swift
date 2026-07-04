@@ -29,6 +29,7 @@ struct MaliyetlendirmeView: View {
     @State private var showKatYonetim    = false
     @State private var showTopluGuncelleme = false
     @State private var showMaliyetTablosu  = false
+    @State private var showCeyrekBilanco   = false
 
     // Dinamik marka listesi — tekrar eden isimleri çıkar
     private var brands: [String] {
@@ -128,6 +129,17 @@ struct MaliyetlendirmeView: View {
                     }
                 }
 
+                // ── Çeyreklik Bilanço ──────────────────────────────────
+                Section {
+                    Button {
+                        showCeyrekBilanco = true
+                    } label: {
+                        Label("Çeyreklik Bilanço", systemImage: "chart.pie.fill")
+                            .foregroundStyle(.purple)
+                            .font(.subheadline.bold())
+                    }
+                }
+
                 // ── Ürün listesi ───────────────────────────────────────
                 Section {
                     if rows.isEmpty {
@@ -210,6 +222,9 @@ struct MaliyetlendirmeView: View {
                         } label: {
                             Image(systemName: "ellipsis.circle")
                         }
+                        Button { showCeyrekBilanco = true } label: {
+                            Image(systemName: "chart.pie.fill").foregroundStyle(.purple)
+                        }
                         Button { showIskontoAnaliz = true } label: {
                             Image(systemName: "percent").foregroundStyle(.green)
                         }
@@ -264,6 +279,9 @@ struct MaliyetlendirmeView: View {
                     iscilik:     iscilik, globalKarPct: karPct,
                     extraItems:  extraItems
                 )
+            }
+            .fullScreenCover(isPresented: $showCeyrekBilanco) {
+                CeyrekBilancoView()
             }
             .fullScreenCover(isPresented: $showMaliyetTablosu) {
                 MaliyetTablosuView(
