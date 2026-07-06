@@ -46,6 +46,8 @@ struct MaliyetTablosuView: View {
     // String key'ler kullanılır çünkü gider kalemi sütunları markaya göre dinamiktir.
     @AppStorage("maliyet_tablosu_column_order_v2")   private var columnOrderRaw:  String = ""
     @AppStorage("maliyet_tablosu_hidden_columns_v1") private var hiddenColumnsRaw: String = ""
+    @AppStorage("maliyet_tablosu_zoom_v1")           private var tableZoom: Double = 1.0
+    @State private var tableNaturalH: CGFloat = 0
     @State private var columnOrder:   [String]    = []
     @State private var hiddenColumns: Set<String> = []
     @State private var showColumnPicker = false
@@ -66,6 +68,7 @@ struct MaliyetTablosuView: View {
         let brutKarPct:         Double   // (satış fiyatı ₺/ton − rasyon maliyeti) / rasyon maliyeti × 100
         let pesin:              Double
         let isManual:           Bool     // manualPesin aktif mi — bagKg değişse de bu fiyat sabit kalır
+        let hesaplanan:         Double   // güncel rasyon + kar% ile HER ZAMAN hesaplanan fiyat (manualPesin'den bağımsız)
         let yeniFiyat:          Double   // pesin + bulkDeltaTL (henüz kaydedilmemiş önizleme)
         let yeniKarPct:         Double
         let lastPublishedPesin: Double?
@@ -119,6 +122,7 @@ struct MaliyetTablosuView: View {
                 brutKarPct: Self.brutKarPct(pesin: pesin, rasyon: rasyon, bagKg: bagKg),
                 pesin: pesin,
                 isManual: manual >= 0,
+                hesaplanan: calc.pesin,   // her zaman güncel maliyet × kar% hesabı
                 yeniFiyat: yeniFiyat,
                 yeniKarPct: Self.realKarPct(price: yeniFiyat, toplamMaliyet: calc.toplam, bagKg: bagKg),
                 lastPublishedPesin: lastPub,
@@ -192,12 +196,24 @@ struct MaliyetTablosuView: View {
 
                 Section {
                     ScrollView(.horizontal, showsIndicators: true) {
+                        let snapshot = costRows
+                        let naturalW = visibleColumnOrder.reduce(CGFloat(0)) { $0 + width(for: $1) }
                         VStack(alignment: .leading, spacing: 0) {
                             tableHeaderRow
-                            ForEach(costRows) { r in
-                                tableDataRow(r, alt: (costRows.firstIndex { $0.id == r.id } ?? 0) % 2 == 1)
+                            ForEach(snapshot) { r in
+                                tableDataRow(r, alt: (snapshot.firstIndex { $0.id == r.id } ?? 0) % 2 == 1)
                             }
                         }
+                        .background(GeometryReader { geo in
+                            Color.clear.onAppear { tableNaturalH = geo.size.height }
+                                       .onChange(of: geo.size.height) { _, h in tableNaturalH = h }
+                        })
+                        .scaleEffect(tableZoom, anchor: .topLeading)
+                        // scaleEffect görsel boyutu büyütür ama layout değişmez.
+                        // padding ile layout'a "büyüme payı" ekliyoruz.
+                        // tableNaturalH: GeometryReader ile ölçülen gerçek yükseklik.
+                        .padding(.bottom,   (tableZoom - 1) * tableNaturalH)
+                        .padding(.trailing, (tableZoom - 1) * naturalW)
                     }
                 } header: {
                     HStack {
@@ -219,6 +235,22 @@ struct MaliyetTablosuView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Kapat") { dismiss() }
+                }
+                ToolbarItem(placement: .principal) {
+                    HStack(spacing: 2) {
+                        Button { tableZoom = max(0.6, tableZoom - 0.1) } label: {
+                            Image(systemName: "minus.magnifyingglass")
+                        }
+                        .disabled(tableZoom <= 0.6)
+                        Text(String(format: "%.0f%%", tableZoom * 100))
+                            .font(.caption.monospacedDigit())
+                            .frame(minWidth: 36)
+                        Button { tableZoom = min(2.0, tableZoom + 0.1) } label: {
+                            Image(systemName: "plus.magnifyingglass")
+                        }
+                        .disabled(tableZoom >= 2.0)
+                    }
+                    .foregroundStyle(.secondary)
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -268,7 +300,7 @@ struct MaliyetTablosuView: View {
     private func defaultColumnKeys() -> [String] {
         var keys = ["kod", "urun", "rasyon", "ipCuval", "fire", "elektrik", "nakliye", "iscilik"]
         keys += giderKalemleri.map { "gider:\($0.name)" }
-        keys += ["toplamMaliyet", "kar", "brutKar", "pesin", "yeniFiyat", "yeniKar", "onceki", "oncekiKarlilik", "fark"]
+        keys += ["toplamMaliyet", "kar", "brutKar", "pesin", "hesaplanan", "hesaplananFark", "yeniFiyat", "yeniKar", "onceki", "oncekiKarlilik", "fark"]
         return keys
     }
 
@@ -313,15 +345,17 @@ struct MaliyetTablosuView: View {
         case "elektrik":       return label3
         case "nakliye":        return label4
         case "iscilik":        return label5
-        case "toplamMaliyet":  return "Toplam Maliyet ₺/t"
-        case "kar":            return "Kar%"
-        case "brutKar":        return "Brüt Kar%"
-        case "pesin":          return "Peşin ₺"
-        case "yeniFiyat":      return "Yeni Fiyat ₺"
-        case "yeniKar":        return "Yeni Kar%"
-        case "onceki":         return "Önceki ₺"
-        case "oncekiKarlilik": return "Önceki Karlılık%"
-        case "fark":           return "Fark ₺"
+        case "toplamMaliyet":    return "Toplam Maliyet ₺/t"
+        case "kar":              return "Kar%"
+        case "brutKar":          return "Brüt Kar%"
+        case "pesin":            return "Peşin ₺"
+        case "hesaplanan":       return "Hesap ₺"
+        case "hesaplananFark":   return "Hesap Fark ₺"
+        case "yeniFiyat":        return "Yeni Fiyat ₺"
+        case "yeniKar":          return "Yeni Kar%"
+        case "onceki":           return "Önceki ₺"
+        case "oncekiKarlilik":   return "Önceki Karlılık%"
+        case "fark":             return "Fark ₺"
         default:
             return key.hasPrefix("gider:") ? String(key.dropFirst(6)) : key
         }
@@ -332,6 +366,7 @@ struct MaliyetTablosuView: View {
         case "kod":                    return 56
         case "urun":                   return 150
         case "kar", "brutKar", "yeniKar", "oncekiKarlilik": return 60
+        case "hesaplananFark":  return 76
         default:                       return 84
         }
     }
@@ -396,6 +431,17 @@ struct MaliyetTablosuView: View {
         case "pesin":
             dataCell(r.isManual ? "M " + String(format: "%.2f", r.pesin) : String(format: "%.2f", r.pesin),
                      w, bold: true, color: r.isManual ? .purple : .primary)
+        case "hesaplanan":
+            let drift = r.isManual && abs(r.hesaplanan - r.pesin) > 0.005
+            dataCell(String(format: "%.2f", r.hesaplanan), w, bold: drift,
+                     color: drift ? .orange : .secondary)
+        case "hesaplananFark":
+            let diff = r.hesaplanan - r.pesin
+            if r.isManual && abs(diff) > 0.005 {
+                dataCell(String(format: "%+.2f", diff), w, color: diff > 0 ? .red : .green)
+            } else {
+                dataCell("—", w, color: .secondary)
+            }
         case "yeniFiyat":
             dataCell(String(format: "%.2f", r.yeniFiyat), w, bold: true,
                      color: bulkDeltaTL == 0 ? .primary : .orange)
@@ -446,13 +492,47 @@ struct MaliyetTablosuView: View {
 
     private func commitKarPct(_ value: Double, code: String) {
         guard let row = rows.first(where: { $0.formula.code == code }) else { return }
-        setKarPct(value, for: row)
+        // Kar% değişince manualPesin'i yeni oran ile yeniden hesapla
+        // (manualPesin olmadan da overrideKarPct kaydedilsin)
+        let rasyon = row.formula.currentCostTL > 0 ? row.formula.currentCostTL : row.formula.recordedCostTL
+        let bagKg  = row.meta?.bagKg ?? 50
+        let extra  = giderKalemleri.map { (value: $0.value, isPercent: $0.isPercent) }
+        let calc   = PricingCalc.calculate(
+            rasyon: rasyon, ipCuval: ipCuval, firePct: firePct,
+            elektrik: elektrik, nakliye: nakliye, iscilik: iscilik,
+            karPct: value, bagKg: bagKg, extraItems: extra
+        )
+        if let meta = row.meta {
+            meta.overrideKarPct = value
+            meta.manualPesin    = calc.pesin   // her zaman yeni kar'a göre güncelle
+        } else {
+            let m = ProductPricingMeta(formulaCode: row.formula.code, overrideKarPct: value, brand: brand)
+            m.manualPesin = calc.pesin
+            context.insert(m)
+        }
         try? context.save()
     }
 
     private func applyBulkKarPct() {
         guard let value = parsedBulkKar else { return }
-        for row in rows { setKarPct(value, for: row) }
+        for row in rows {
+            let rasyon = row.formula.currentCostTL > 0 ? row.formula.currentCostTL : row.formula.recordedCostTL
+            let bagKg  = row.meta?.bagKg ?? 50
+            let extra  = giderKalemleri.map { (v: $0.value, ip: $0.isPercent) }
+            let calc   = PricingCalc.calculate(
+                rasyon: rasyon, ipCuval: ipCuval, firePct: firePct,
+                elektrik: elektrik, nakliye: nakliye, iscilik: iscilik,
+                karPct: value, bagKg: bagKg, extraItems: extra.map { (value: $0.v, isPercent: $0.ip) }
+            )
+            if let meta = row.meta {
+                meta.overrideKarPct = value
+                meta.manualPesin    = calc.pesin
+            } else {
+                let m = ProductPricingMeta(formulaCode: row.formula.code, overrideKarPct: value, brand: brand)
+                m.manualPesin = calc.pesin
+                context.insert(m)
+            }
+        }
         try? context.save()
         bulkKarText = ""
     }
@@ -581,6 +661,9 @@ private struct KarPctField: View {
             .padding(2)
             .focused($isFocused)
             .onAppear { text = String(format: "%.1f", initial) }
+            .onChange(of: initial) { _, newVal in
+                if !isFocused { text = String(format: "%.1f", newVal) }
+            }
             .onChange(of: isFocused) { _, focused in
                 if !focused { commit() }
             }

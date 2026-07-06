@@ -714,6 +714,8 @@ struct ProductPricingMetaSheet: View {
     @State private var brand:             String           = "Alapala"
     @State private var proteinStr:        String           = ""   // boş = formül değeri
     @State private var manualPesinStr:    String           = ""   // boş = hesaplanan
+    @State private var manualPesinStrAtLoad: String       = ""   // yükleme anındaki değer
+    @State private var overrideKarStrAtLoad: String       = ""   // yükleme anındaki kar%
     @State private var logoImagePath: String  = ""
     @State private var logoImageData: Data?   = nil
 
@@ -935,8 +937,10 @@ struct ProductPricingMetaSheet: View {
             .navigationTitle(formula.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("İptal") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("İptal") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Button("Kaydet") { save(); dismiss() }.fontWeight(.semibold)
                 }
             }
@@ -981,6 +985,8 @@ struct ProductPricingMetaSheet: View {
         if m.manualPesin >= 0 {
             manualPesinStr = String(format: "%.2f", m.manualPesin)
         }
+        manualPesinStrAtLoad = manualPesinStr
+        overrideKarStrAtLoad = overrideKarStr
     }
 
     private func save() {
@@ -998,9 +1004,24 @@ struct ProductPricingMetaSheet: View {
         meta.logoName       = logoName
         meta.logoImagePath  = logoImagePath
         meta.logoImageData  = logoImageData
-        meta.overrideKarPct = Double(overrideKarStr.replacingOccurrences(of: ",", with: ".")) ?? -1
+        let newKar = Double(overrideKarStr.replacingOccurrences(of: ",", with: ".")) ?? -1
+        meta.overrideKarPct  = newKar
         meta.proteinOverride = Double(proteinStr.replacingOccurrences(of: ",", with: ".")) ?? -1
-        meta.manualPesin    = Double(manualPesinStr.replacingOccurrences(of: ",", with: ".")) ?? -1
+
+        // Kullanıcı manuel fiyat alanını değiştirdiyse onu kullan;
+        // aksi hâlde kar% baz alınarak yeniden hesapla (böylece kar% değişince fiyat da güncellenir)
+        let manualChanged = manualPesinStr != manualPesinStrAtLoad
+        if manualChanged {
+            meta.manualPesin = Double(manualPesinStr.replacingOccurrences(of: ",", with: ".")) ?? -1
+        } else {
+            let effKar = newKar >= 0 ? newKar : globalKarPct
+            let calcResult = PricingCalc.calculate(
+                rasyon: rasyon, ipCuval: ipCuval, firePct: firePct,
+                elektrik: elektrik, nakliye: nakliye, iscilik: iscilik,
+                karPct: effKar, bagKg: bagKg
+            )
+            meta.manualPesin = calcResult.pesin
+        }
         try? context.save()
     }
 

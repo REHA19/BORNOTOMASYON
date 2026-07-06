@@ -565,6 +565,7 @@ struct FormulaEditorView: View {
                 }
                 tabBar
                 tabContent
+                    .frame(maxHeight: .infinity)
             }
             .navigationTitle(formula == nil ? "Yeni Formül" : vm.name.isEmpty ? "Formül" : vm.name)
             .navigationBarTitleDisplayMode(.inline)

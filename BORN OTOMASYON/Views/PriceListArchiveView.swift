@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import QuickLook
 
 // MARK: - Fiyat Listesi Arşivi
 
@@ -9,8 +10,9 @@ struct PriceListArchiveView: View {
     @Query(sort: \PriceListArchive.savedAt, order: .reverse) private var allArchives: [PriceListArchive]
     @Environment(\.modelContext) private var context
 
-    @State private var shareURL: URL?  = nil
+    @State private var shareURL:   URL? = nil
     @State private var showShare       = false
+    @State private var previewURL: URL? = nil
 
     private var archives: [PriceListArchive] {
         allArchives.filter { $0.brand == brand }
@@ -26,56 +28,61 @@ struct PriceListArchiveView: View {
                 )
             } else {
                 ForEach(archives) { archive in
-                    HStack(spacing: 12) {
-                        Image(systemName: "doc.richtext")
-                            .font(.title2)
-                            .foregroundStyle(.orange)
+                    Button {
+                        if archive.fileExists { previewURL = archive.fileURL }
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: archive.fileExists ? "doc.richtext.fill" : "doc.richtext")
+                                .font(.title2)
+                                .foregroundStyle(archive.fileExists ? .orange : .secondary)
 
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack(spacing: 6) {
-                                Text(archive.displayDate)
-                                    .font(.subheadline.bold())
-                                if archive.isPublished {
-                                    Text("YAYINDA")
-                                        .font(.caption2.bold()).foregroundStyle(.white)
-                                        .padding(.horizontal, 5).padding(.vertical, 1)
-                                        .background(.green, in: Capsule())
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(spacing: 6) {
+                                    Text(archive.displayDate)
+                                        .font(.subheadline.bold())
+                                        .foregroundStyle(.primary)
+                                    if archive.isPublished {
+                                        Text("YAYINDA")
+                                            .font(.caption2.bold()).foregroundStyle(.white)
+                                            .padding(.horizontal, 5).padding(.vertical, 1)
+                                            .background(.green, in: Capsule())
+                                    }
                                 }
+                                HStack(spacing: 6) {
+                                    if !archive.revision.isEmpty {
+                                        Text("Rev: \(archive.revision)")
+                                            .font(.caption).foregroundStyle(.orange)
+                                    }
+                                    if !archive.period.isEmpty {
+                                        Text(archive.period)
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                                Text(archive.fileName)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
                             }
-                            HStack(spacing: 6) {
-                                if !archive.revision.isEmpty {
-                                    Text("Rev: \(archive.revision)")
-                                        .font(.caption).foregroundStyle(.orange)
+
+                            Spacer()
+
+                            if archive.fileExists {
+                                Button {
+                                    shareURL = archive.fileURL
+                                    showShare = true
+                                } label: {
+                                    Image(systemName: "square.and.arrow.up")
+                                        .foregroundStyle(.blue)
                                 }
-                                if !archive.period.isEmpty {
-                                    Text(archive.period)
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
+                                .buttonStyle(.borderless)
+                            } else {
+                                Image(systemName: "exclamationmark.triangle")
+                                    .foregroundStyle(.red)
                             }
-                            Text(archive.fileName)
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
                         }
-
-                        Spacer()
-
-                        if archive.fileExists {
-                            Button {
-                                shareURL = archive.fileURL
-                                showShare = true
-                            } label: {
-                                Image(systemName: "square.and.arrow.up")
-                                    .foregroundStyle(.blue)
-                            }
-                            .buttonStyle(.borderless)
-                        } else {
-                            Image(systemName: "exclamationmark.triangle")
-                                .foregroundStyle(.red)
-                                .help("Dosya bulunamadı")
-                        }
+                        .padding(.vertical, 2)
                     }
-                    .padding(.vertical, 2)
+                    .buttonStyle(.plain)
                 }
                 .onDelete(perform: deleteArchives)
             }
@@ -90,6 +97,7 @@ struct PriceListArchiveView: View {
         .sheet(isPresented: $showShare) {
             if let url = shareURL { ShareSheet(url: url) }
         }
+        .quickLookPreview($previewURL)
     }
 
     private func deleteArchives(at offsets: IndexSet) {
