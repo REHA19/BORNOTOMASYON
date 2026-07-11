@@ -468,6 +468,12 @@ private struct RecordRow: View {
                         .foregroundStyle(record.isSuccess ? .green : .red)
                         .lineLimit(2)
                 }
+                if !record.erpMessage.isEmpty {
+                    Text("Bulut ERP: \(record.erpMessage)")
+                        .font(.caption2)
+                        .foregroundStyle(record.erpIsSuccess ? .green : .red)
+                        .lineLimit(1)
+                }
             }
 
             Spacer()
@@ -584,6 +590,25 @@ struct SentRecordDetailView: View {
                     Text(record.serverMessage)
                         .font(.caption)
                         .foregroundStyle(record.isSuccess ? .green : .secondary)
+                }
+
+                if !record.erpRasyonNo.isEmpty || !record.erpMessage.isEmpty {
+                    if !record.erpRasyonNo.isEmpty {
+                        infoRow("Bulut ERP Rasyon No", record.erpRasyonNo)
+                    }
+                    HStack {
+                        Text("Bulut ERP Durumu").foregroundStyle(.secondary)
+                        Spacer()
+                        Label(record.erpIsSuccess ? "Başarılı" : "Hatalı",
+                              systemImage: record.erpIsSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .font(.subheadline.bold())
+                            .foregroundStyle(record.erpIsSuccess ? .green : .red)
+                    }
+                    if !record.erpMessage.isEmpty {
+                        Text(record.erpMessage)
+                            .font(.caption)
+                            .foregroundStyle(record.erpIsSuccess ? .green : .secondary)
+                    }
                 }
             }
 

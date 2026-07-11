@@ -16,6 +16,9 @@ final class SendRecord {
     var ingredientsSnapshot:  String = "[]"   // JSON: [SentIngredientSnap]
     var costPerTon:           Double = 0      // gönderim anındaki ₺/ton maliyeti
     var nutrientsSnapshot:    String = "[]"   // JSON: [SentNutrientSnap]
+    var erpRasyonNo:          String = ""     // Bulut ERP'ye gönderilen rasyonno (Versiyon alanı)
+    var erpIsSuccess:         Bool   = false
+    var erpMessage:           String = ""
 
     init(formulaCode:          String,
          formulaName:          String,
@@ -28,7 +31,10 @@ final class SendRecord {
          totalKg:              Double,
          ingredientsSnapshot:  String = "[]",
          costPerTon:           Double = 0,
-         nutrientsSnapshot:    String = "[]") {
+         nutrientsSnapshot:    String = "[]",
+         erpRasyonNo:          String = "",
+         erpIsSuccess:         Bool   = false,
+         erpMessage:           String = "") {
         self.formulaCode          = formulaCode
         self.formulaName          = formulaName
         self.customName           = customName
@@ -42,6 +48,9 @@ final class SendRecord {
         self.ingredientsSnapshot  = ingredientsSnapshot
         self.costPerTon           = costPerTon
         self.nutrientsSnapshot    = nutrientsSnapshot
+        self.erpRasyonNo          = erpRasyonNo
+        self.erpIsSuccess         = erpIsSuccess
+        self.erpMessage           = erpMessage
     }
 
     var snapshotIngredients: [SentIngredientSnap] {

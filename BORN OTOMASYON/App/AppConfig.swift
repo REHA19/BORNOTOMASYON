@@ -21,4 +21,10 @@ enum AppConfig {
         static let request: TimeInterval = 30
         static let resource: TimeInterval = 60
     }
+
+    enum BulutErp {
+        static let baseURL  = "http://www.bulut-erp.com:7171"
+        static let endpoint = "/Rasyonlar/Kaydet"
+        static let uuid     = "MJD3B174QM84CBSY1R2T"
+    }
 }

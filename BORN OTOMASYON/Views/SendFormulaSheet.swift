@@ -1,6 +1,18 @@
 import SwiftUI
 import SwiftData
 
+// MARK: - Gönderim hedefi (BORN sunucusu / Bulut ERP / ikisi de)
+
+enum SendTarget: String, CaseIterable, Identifiable, Sendable {
+    case born  = "BORN Sunucu"
+    case bulut = "Bulut ERP"
+    case both  = "İkisi de"
+
+    var id: String { rawValue }
+    var sendsToBorn:  Bool { self != .bulut }
+    var sendsToBulut: Bool { self != .born }
+}
+
 // MARK: - Single formula send sheet
 
 struct SendFormulaSheet: View {
@@ -8,14 +20,17 @@ struct SendFormulaSheet: View {
 
     @Environment(\.dismiss)       private var dismiss
     @Environment(\.modelContext)  private var modelContext
+    @Query private var library: [FeedIngredient]
 
     @State private var customName:    String = ""
     @State private var customVersion: String = ""
     @State private var validDate:     Date   = Date()
     @State private var comment:       String = ""
     @State private var activate:      Bool   = true
+    @State private var target:        SendTarget = .both
     @State private var isSending:     Bool   = false
     @State private var sendResult:    SendOutcome?
+    @State private var erpResult:     SendOutcome?
 
     private var activeIngredients: [BFIngredient] {
         formula.ingredients.filter { $0.isActive && $0.mixPct > 0 }
@@ -29,7 +44,8 @@ struct SendFormulaSheet: View {
                 formulaInfoSection
                 sendParamsSection
                 ingredientPreviewSection
-                if let r = sendResult { resultSection(r) }
+                if let r = sendResult { resultSection(r, title: "BORN Sunucu") }
+                if let e = erpResult  { resultSection(e, title: "Bulut ERP") }
             }
             .navigationTitle("Sunucuya Gönder")
             .navigationBarTitleDisplayMode(.inline)
@@ -44,7 +60,9 @@ struct SendFormulaSheet: View {
                         Button("Gönder") { Task { await send() } }
                             .fontWeight(.semibold)
                             .disabled(customName.trimmingCharacters(in: .whitespaces).isEmpty
-                                      || activeIngredients.isEmpty)
+                                      || activeIngredients.isEmpty
+                                      || (target.sendsToBulut
+                                          && customVersion.trimmingCharacters(in: .whitespaces).isEmpty))
                     }
                 }
             }
@@ -92,6 +110,10 @@ struct SendFormulaSheet: View {
                     .multilineTextAlignment(.trailing)
             }
             Toggle("Aktif Olarak Gönder", isOn: $activate)
+            Picker("Gönderim Hedefi", selection: $target) {
+                ForEach(SendTarget.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
         }
     }
 
@@ -119,8 +141,8 @@ struct SendFormulaSheet: View {
     }
 
     @ViewBuilder
-    private func resultSection(_ r: SendOutcome) -> some View {
-        Section {
+    private func resultSection(_ r: SendOutcome, title: String) -> some View {
+        Section(title) {
             switch r {
             case .success(let msg):
                 Label(msg, systemImage: "checkmark.circle.fill")
@@ -137,24 +159,72 @@ struct SendFormulaSheet: View {
     private func send() async {
         isSending  = true
         sendResult = nil
+        erpResult  = nil
 
-        let model = buildModel()
+        let model      = buildModel()
+        let erpPayload = target.sendsToBulut ? buildErpPayload(details: model.details) : nil
 
-        do {
-            let resp    = try await CreateFormulaService().create(model: model)
-            let message = resp.message ?? "Formül başarıyla gönderildi."
-            sendResult  = .success(message)
-            saveRecord(success: true, message: message)
-        } catch {
-            let message = error.localizedDescription
-            sendResult  = .failure(message)
-            saveRecord(success: false, message: message)
-        }
+        async let bornOutcome: SendOutcome? = attemptBorn(model: model)
+        async let erpOutcome:  SendOutcome? = attemptErp(payload: erpPayload)
+        let (born, erp) = await (bornOutcome, erpOutcome)
+
+        sendResult = born
+        erpResult  = erp
+        saveRecord(bornSuccess: born?.isSuccess ?? true, bornMessage: born?.message ?? "",
+                   erpSuccess:  erp?.isSuccess  ?? true, erpMessage:  erp?.message  ?? "")
 
         isSending = false
     }
 
-    private func saveRecord(success: Bool, message: String) {
+    private func attemptBorn(model: FormulaCreateAppModel) async -> SendOutcome? {
+        guard target.sendsToBorn else { return nil }
+        do {
+            let resp = try await CreateFormulaService().create(model: model)
+            return .success(resp.message ?? "Formül başarıyla gönderildi.")
+        } catch {
+            return .failure(error.localizedDescription)
+        }
+    }
+
+    private func attemptErp(payload: BulutErpRasyonPayload?) async -> SendOutcome? {
+        guard let payload else { return nil }
+        do {
+            let resp = try await BulutErpService().send(payload: payload)
+            return .success(resp.message.isEmpty ? "Bulut ERP'ye gönderildi." : resp.message)
+        } catch {
+            return .failure(error.localizedDescription)
+        }
+    }
+
+    private func buildErpPayload(details: [FormulaCreateDetailAppModel]) -> BulutErpRasyonPayload {
+        let costByCode: [String: Double] = Dictionary(
+            activeIngredients.map { ing -> (String, Double) in
+                let lib      = IngredientMatcher.find(code: ing.code, name: ing.name, in: library)
+                let rawPrice = ing.overridePriceTLPerTon ?? lib?.priceTL ?? 0
+                return (ing.code, rawPrice / 1000.0)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        let items = details.map {
+            BulutErpRasyonPayload.Item(code: $0.materialCode, name: $0.materialName,
+                                        costPerKg: costByCode[$0.materialCode] ?? 0,
+                                        amountKg: $0.amount)
+        }
+        let costPerTon = formula.lastSolve?.costPerTon ?? formula.currentCostTL
+
+        return BulutErpRasyonPayload(
+            rasyonNo:         customVersion.trimmingCharacters(in: .whitespaces),
+            rasyonTarih:      Date(),
+            productCode:      formula.code,
+            productName:      formula.name,
+            productCostPerKg: costPerTon / 1000.0,
+            items:            items
+        )
+    }
+
+    private func saveRecord(bornSuccess: Bool, bornMessage: String,
+                            erpSuccess: Bool, erpMessage: String) {
         let snaps = activeIngredients.map {
             SentIngredientSnap(code: $0.code, name: $0.name,
                                amountKg: $0.mixPct / 100.0 * formula.totalKg,
@@ -167,13 +237,16 @@ struct SendFormulaSheet: View {
             customName:           customName.trimmingCharacters(in: .whitespaces),
             customVersion:        customVersion.trimmingCharacters(in: .whitespaces),
             source:               "SingleBlend",
-            isSuccess:            success,
-            serverMessage:        message,
+            isSuccess:            bornSuccess,
+            serverMessage:        bornMessage,
             ingredientCount:      activeIngredients.count,
             totalKg:              formula.totalKg,
             ingredientsSnapshot:  snapJSON,
             costPerTon:           formula.lastSolve?.costPerTon ?? formula.currentCostTL,
-            nutrientsSnapshot:    SendRecord.buildNutrientSnaps(from: formula)
+            nutrientsSnapshot:    SendRecord.buildNutrientSnaps(from: formula),
+            erpRasyonNo:          target.sendsToBulut ? customVersion.trimmingCharacters(in: .whitespaces) : "",
+            erpIsSuccess:         erpSuccess,
+            erpMessage:           erpMessage
         )
         modelContext.insert(record)
         try? modelContext.save()
@@ -217,6 +290,7 @@ struct MultiBlendSendSheet: View {
 
     @Environment(\.dismiss)      private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Query private var library: [FeedIngredient]
 
     // Per-formula
     @State private var customNames: [String: String] = [:]
@@ -228,11 +302,12 @@ struct MultiBlendSendSheet: View {
     @State private var customVersion:  String = ""
     @State private var comment:        String = ""
     @State private var activate:       Bool   = true
+    @State private var target:         SendTarget = .both
 
     // Send state
     @State private var isSending:        Bool                   = false
     @State private var sendProgress:     Double                 = 0
-    @State private var sendResults:      [String: SendOutcome]  = [:]
+    @State private var sendResults:      [String: DualOutcome]  = [:]
     @State private var currentlySending: String?                = nil
 
     private var selectedFormulas: [BlendFormula] {
@@ -277,7 +352,9 @@ struct MultiBlendSendSheet: View {
                             Task { await sendAll() }
                         }
                         .fontWeight(.semibold)
-                        .disabled(selected.isEmpty)
+                        .disabled(selected.isEmpty
+                                  || (target.sendsToBulut
+                                      && customVersion.trimmingCharacters(in: .whitespaces).isEmpty))
                     }
                 }
             }
@@ -308,6 +385,10 @@ struct MultiBlendSendSheet: View {
                     .multilineTextAlignment(.trailing)
             }
             Toggle("Aktif Olarak Gönder", isOn: $activate)
+            Picker("Gönderim Hedefi", selection: $target) {
+                ForEach(SendTarget.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
         }
     }
 
@@ -354,9 +435,9 @@ struct MultiBlendSendSheet: View {
                         if isCurrent {
                             ProgressView().scaleEffect(0.85)
                         } else if let res = result {
-                            Image(systemName: res.isSuccess
+                            Image(systemName: res.isOverallSuccess
                                   ? "checkmark.circle.fill" : "xmark.circle.fill")
-                                .foregroundStyle(res.isSuccess ? .green : .red)
+                                .foregroundStyle(res.isOverallSuccess ? .green : .red)
                         } else if !hasSolve {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .font(.caption)
@@ -385,9 +466,16 @@ struct MultiBlendSendSheet: View {
 
                 // Result feedback
                 if let res = result {
-                    Text(res.message)
-                        .font(.caption)
-                        .foregroundStyle(res.isSuccess ? .green : .red)
+                    if let born = res.born {
+                        Text(born.message)
+                            .font(.caption)
+                            .foregroundStyle(born.isSuccess ? .green : .red)
+                    }
+                    if let erp = res.erp {
+                        Text("Bulut ERP: \(erp.message)")
+                            .font(.caption2)
+                            .foregroundStyle(erp.isSuccess ? .green : .red)
+                    }
                 }
             }
         }
@@ -405,18 +493,27 @@ struct MultiBlendSendSheet: View {
         let trimVersion = customVersion.trimmingCharacters(in: .whitespaces)
         let vDate       = validDate
         let act         = activate
+        let tgt         = target
 
         // Snapshot all send data on @MainActor before background work
+        // (FeedIngredient/library lookups must happen here — SwiftData @Model isn't Sendable)
         struct FormSnap: @unchecked Sendable {
             let code: String; let name: String; let totalKg: Double; let customName: String
-            let ings: [(code: String, name: String, mixPct: Double)]
+            let costPerTon: Double
+            let ings: [(code: String, name: String, mixPct: Double, costPerKg: Double)]
         }
         let snaps: [FormSnap] = selectedFormulas.map { f in
-            let cName = (customNames[f.code] ?? f.name).trimmingCharacters(in: .whitespaces)
+            let cName  = (customNames[f.code] ?? f.name).trimmingCharacters(in: .whitespaces)
             let active = f.ingredients.filter { $0.isActive && $0.mixPct > 0 }
+            let ings = active.map { ing -> (code: String, name: String, mixPct: Double, costPerKg: Double) in
+                let lib      = IngredientMatcher.find(code: ing.code, name: ing.name, in: library)
+                let rawPrice = ing.overridePriceTLPerTon ?? lib?.priceTL ?? 0
+                return (code: ing.code, name: ing.name, mixPct: ing.mixPct, costPerKg: rawPrice / 1000.0)
+            }
             return FormSnap(
                 code: f.code, name: f.name, totalKg: f.totalKg, customName: cName,
-                ings: active.map { (code: $0.code, name: $0.name, mixPct: $0.mixPct) }
+                costPerTon: f.lastSolve?.costPerTon ?? f.currentCostTL,
+                ings: ings
             )
         }
         let total = snaps.count
@@ -425,7 +522,7 @@ struct MultiBlendSendSheet: View {
         currentlySending = "0/\(total)"
 
         var completed = 0
-        await withTaskGroup(of: (code: String, outcome: SendOutcome, customName: String).self) { grp in
+        await withTaskGroup(of: (code: String, outcome: DualOutcome, customName: String).self) { grp in
             for snap in snaps {
                 grp.addTask {
                     let totalPct   = snap.ings.reduce(0) { $0 + $1.mixPct }
@@ -442,25 +539,56 @@ struct MultiBlendSendSheet: View {
                                 isAdditive:   false
                             )
                         }
-                    let model = FormulaCreateAppModel(
-                        productCode:   snap.code,
-                        productName:   snap.name,
-                        customName:    snap.customName,
-                        customVersion: trimVersion,
-                        validDate:     vDate,
-                        totalAmount:   1000.0,
-                        comment:       trimComment,
-                        details:       details,
-                        activate:      act
-                    )
-                    do {
-                        let resp    = try await svc.create(model: model)
-                        let message = resp.message ?? "✓ Gönderildi"
-                        return (snap.code, .success(message), snap.customName)
-                    } catch {
-                        let message = "✗ \(String(error.localizedDescription.prefix(80)))"
-                        return (snap.code, .failure(message), snap.customName)
+
+                    var bornOutcome: SendOutcome?
+                    if tgt.sendsToBorn {
+                        let model = FormulaCreateAppModel(
+                            productCode:   snap.code,
+                            productName:   snap.name,
+                            customName:    snap.customName,
+                            customVersion: trimVersion,
+                            validDate:     vDate,
+                            totalAmount:   1000.0,
+                            comment:       trimComment,
+                            details:       details,
+                            activate:      act
+                        )
+                        do {
+                            let resp = try await svc.create(model: model)
+                            bornOutcome = .success(resp.message ?? "✓ Gönderildi")
+                        } catch {
+                            bornOutcome = .failure("✗ \(String(error.localizedDescription.prefix(80)))")
+                        }
                     }
+
+                    var erpOutcome: SendOutcome?
+                    if tgt.sendsToBulut {
+                        let costByCode: [String: Double] = Dictionary(
+                            snap.ings.map { ($0.code, $0.costPerKg) },
+                            uniquingKeysWith: { first, _ in first }
+                        )
+                        let items = details.map {
+                            BulutErpRasyonPayload.Item(code: $0.materialCode, name: $0.materialName,
+                                                        costPerKg: costByCode[$0.materialCode] ?? 0,
+                                                        amountKg: $0.amount)
+                        }
+                        let payload = BulutErpRasyonPayload(
+                            rasyonNo:         trimVersion,
+                            rasyonTarih:      Date(),
+                            productCode:      snap.code,
+                            productName:      snap.name,
+                            productCostPerKg: snap.costPerTon / 1000.0,
+                            items:            items
+                        )
+                        do {
+                            let resp = try await BulutErpService().send(payload: payload)
+                            erpOutcome = .success(resp.message.isEmpty ? "✓ ERP" : "✓ \(resp.message.prefix(80))")
+                        } catch {
+                            erpOutcome = .failure("✗ ERP: \(String(error.localizedDescription.prefix(80)))")
+                        }
+                    }
+
+                    return (snap.code, DualOutcome(born: bornOutcome, erp: erpOutcome), snap.customName)
                 }
             }
 
@@ -471,13 +599,13 @@ struct MultiBlendSendSheet: View {
                 sendResults[result.code] = result.outcome
                 // Save record (needs SwiftData / @MainActor — already on main because sendAll is @MainActor via Task)
                 if let formula = selectedFormulas.first(where: { $0.code == result.code }) {
-                    let success: Bool; let message: String
-                    switch result.outcome {
-                    case .success(let m): success = true;  message = m
-                    case .failure(let m): success = false; message = m
-                    }
                     saveRecord(formula: formula, customName: result.customName,
-                               customVersion: trimVersion, success: success, message: message)
+                               customVersion: trimVersion,
+                               bornSuccess: result.outcome.born?.isSuccess ?? true,
+                               bornMessage: result.outcome.born?.message ?? "",
+                               erpSuccess:  result.outcome.erp?.isSuccess ?? true,
+                               erpMessage:  result.outcome.erp?.message ?? "",
+                               erpAttempted: tgt.sendsToBulut)
                 }
             }
         }
@@ -488,7 +616,10 @@ struct MultiBlendSendSheet: View {
     }
 
     private func saveRecord(formula: BlendFormula, customName: String,
-                            customVersion: String, success: Bool, message: String) {
+                            customVersion: String,
+                            bornSuccess: Bool, bornMessage: String,
+                            erpSuccess: Bool, erpMessage: String,
+                            erpAttempted: Bool) {
         let active = formula.ingredients.filter { $0.isActive && $0.mixPct > 0 }
         let snaps  = active.map {
             SentIngredientSnap(code: $0.code, name: $0.name,
@@ -502,13 +633,16 @@ struct MultiBlendSendSheet: View {
             customName:           customName,
             customVersion:        customVersion,
             source:               source,
-            isSuccess:            success,
-            serverMessage:        message,
+            isSuccess:            bornSuccess,
+            serverMessage:        bornMessage,
             ingredientCount:      active.count,
             totalKg:              formula.totalKg,
             ingredientsSnapshot:  snapJSON,
             costPerTon:           formula.lastSolve?.costPerTon ?? formula.currentCostTL,
-            nutrientsSnapshot:    SendRecord.buildNutrientSnaps(from: formula)
+            nutrientsSnapshot:    SendRecord.buildNutrientSnaps(from: formula),
+            erpRasyonNo:          erpAttempted ? customVersion : "",
+            erpIsSuccess:         erpSuccess,
+            erpMessage:           erpMessage
         )
         modelContext.insert(record)
         try? modelContext.save()
@@ -517,7 +651,7 @@ struct MultiBlendSendSheet: View {
 
 // MARK: - Shared result type
 
-enum SendOutcome {
+enum SendOutcome: Sendable {
     case success(String)
     case failure(String)
 
@@ -531,5 +665,16 @@ enum SendOutcome {
         case .success(let m): return m
         case .failure(let m): return m
         }
+    }
+}
+
+// MARK: - Combined BORN + Bulut ERP outcome (MultiBlendSendSheet)
+
+struct DualOutcome: Sendable {
+    let born: SendOutcome?
+    let erp:  SendOutcome?
+
+    var isOverallSuccess: Bool {
+        (born?.isSuccess ?? true) && (erp?.isSuccess ?? true)
     }
 }
