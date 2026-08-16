@@ -383,6 +383,13 @@ struct RasyonDetailView: View {
     let formula:     BlendFormula
     let onOpenBlend: () -> Void
 
+    // Ayarlanabilir sütun genişlikleri — başlıktaki tutamaç sürüklenerek değişir
+    @StateObject private var colWidths = ColumnWidthStore(tableID: "rasyonDetay")
+    private static let defAmountW: CGFloat = 80
+    private static let defPctW:    CGFloat = 52
+    private var amountW: CGFloat { colWidths.width("miktar", default: Self.defAmountW) }
+    private var pctW:    CGFloat { colWidths.width("yuzde",  default: Self.defPctW) }
+
     private static let df: DateFormatter = {
         let f = DateFormatter(); f.locale = Locale(identifier: "tr_TR")
         f.dateFormat = "dd.MM.yyyy"; return f
@@ -410,9 +417,11 @@ struct RasyonDetailView: View {
                     Text("Hammadde").font(.caption.bold()).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Text("Miktar (kg)").font(.caption.bold()).foregroundStyle(.secondary)
-                        .frame(width: 80, alignment: .trailing)
+                        .frame(width: amountW, alignment: .trailing)
+                        .resizableColumn("miktar", default: Self.defAmountW, store: colWidths)
                     Text("%").font(.caption.bold()).foregroundStyle(.secondary)
-                        .frame(width: 52, alignment: .trailing)
+                        .frame(width: pctW, alignment: .trailing)
+                        .resizableColumn("yuzde", default: Self.defPctW, store: colWidths)
                 }
                 .listRowBackground(Color(.systemGroupedBackground))
 
@@ -431,12 +440,12 @@ struct RasyonDetailView: View {
 
                         Text(String(format: "%.2f", amountKg))
                             .font(.subheadline.monospacedDigit())
-                            .frame(width: 80, alignment: .trailing)
+                            .frame(width: amountW, alignment: .trailing)
 
                         Text(String(format: "%.2f", ing.mixPct))
                             .font(.subheadline.monospacedDigit())
                             .foregroundStyle(.secondary)
-                            .frame(width: 52, alignment: .trailing)
+                            .frame(width: pctW, alignment: .trailing)
                     }
                 }
 
@@ -446,15 +455,28 @@ struct RasyonDetailView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Text(String(format: "%.2f", formula.totalKg))
                         .font(.subheadline.monospacedDigit().bold())
-                        .frame(width: 80, alignment: .trailing)
+                        .frame(width: amountW, alignment: .trailing)
                     Text("100.00")
                         .font(.subheadline.monospacedDigit().bold())
                         .foregroundStyle(.secondary)
-                        .frame(width: 52, alignment: .trailing)
+                        .frame(width: pctW, alignment: .trailing)
                 }
                 .listRowBackground(Color.accentColor.opacity(0.07))
             } header: {
-                Text("Hammadde Kullanım Miktarları")
+                HStack {
+                    Text("Hammadde Kullanım Miktarları")
+                    Spacer()
+                    if colWidths.hasCustomWidths {
+                        Menu {
+                            ColumnWidthResetButton(store: colWidths)
+                        } label: {
+                            Image(systemName: "arrow.left.and.right.square").font(.caption)
+                        }
+                    }
+                }
+            } footer: {
+                Text("Sütun genişliğini değiştirmek için başlıktaki çizgiyi sürükleyin.")
+                    .font(.caption2)
             }
 
             // SingleBlend'de aç

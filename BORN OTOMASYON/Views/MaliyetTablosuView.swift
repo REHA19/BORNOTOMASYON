@@ -52,6 +52,9 @@ struct MaliyetTablosuView: View {
     @State private var hiddenColumns: Set<String> = []
     @State private var showColumnPicker = false
 
+    // Sütun genişlikleri — başlıktaki tutamaç sürüklenerek ayarlanır, cihazda kalıcı
+    @StateObject private var colWidths = ColumnWidthStore(tableID: "maliyetTablosu")
+
     // PDF'e özel sütun seçimi — ekrandaki gizleme durumundan bağımsız, sadece bu paylaşım için
     @State private var showPDFColumnPicker = false
     @State private var pdfHiddenColumns: Set<String> = []
@@ -73,10 +76,27 @@ struct MaliyetTablosuView: View {
         let yeniKarPct:         Double
         let lastPublishedPesin: Double?
         let oncekiKarlilikPct:  Double?  // lastPublishedPesin'in GÜNCEL toplamMaliyet'e göre kâr oranı
+        /// Son yayınlanan listedeki rasyon maliyeti ₺/ton (o alan eklenmeden önceki arşivlerde nil)
+        let oncekiRasyon:       Double?
+        /// Güncel rasyon − yayınlanan rasyon (₺/ton)
+        var rasyonFark: Double? { oncekiRasyon.map { rasyon - $0 } }
+        /// Rasyon maliyetindeki değişim oranı
+        var rasyonFarkPct: Double? {
+            guard let o = oncekiRasyon, o > 0 else { return nil }
+            return (rasyon - o) / o * 100
+        }
     }
 
     private var lastPublished: PriceListArchive? {
         PriceListArchive.lastPublished(brand: brand, in: allArchives)
+    }
+
+    /// Ölçülen tablo yüksekliğini yalnızca anlamlı değişimde yazar.
+    /// Eşik olmadan, kayan nokta gürültüsü bile yeniden layout tetikleyip
+    /// "observation tracking feedback loop" hatasına ve donmaya yol açar.
+    private func updateNaturalH(_ h: CGFloat) {
+        guard h.isFinite, h > 0, abs(h - tableNaturalH) > 1.0 else { return }
+        tableNaturalH = h
     }
 
     private var bulkDeltaTL: Double {
@@ -97,7 +117,7 @@ struct MaliyetTablosuView: View {
 
     private var costRows: [CostRow] {
         let publishedByCode = Dictionary(
-            (lastPublished?.prices ?? []).map { ($0.code, $0.pesin) }, uniquingKeysWith: { a, _ in a }
+            (lastPublished?.prices ?? []).map { ($0.code, $0) }, uniquingKeysWith: { a, _ in a }
         )
         let extraTuples = giderKalemleri.map { (value: $0.value, isPercent: $0.isPercent) }
         return rows.map { row in
@@ -114,7 +134,10 @@ struct MaliyetTablosuView: View {
             let manual    = row.meta?.manualPesin ?? -1
             let pesin     = manual >= 0 ? manual : calc.pesin
             let yeniFiyat = max(0, pesin + bulkDeltaTL)
-            let lastPub   = publishedByCode[row.formula.code]
+            let snap      = publishedByCode[row.formula.code]
+            let lastPub   = snap?.pesin
+            // rasyon alanı sonradan eklendi — 0 ise o arşivde veri yok demektir
+            let oncekiRas = (snap?.rasyon).flatMap { $0 > 0 ? $0 : nil }
             return CostRow(
                 code: row.formula.code, name: row.formula.name, rasyon: rasyon,
                 ipCuval: ipCuval, fire: fire, elektrik: elektrik, nakliye: nakliye, iscilik: iscilik,
@@ -126,7 +149,8 @@ struct MaliyetTablosuView: View {
                 yeniFiyat: yeniFiyat,
                 yeniKarPct: Self.realKarPct(price: yeniFiyat, toplamMaliyet: calc.toplam, bagKg: bagKg),
                 lastPublishedPesin: lastPub,
-                oncekiKarlilikPct: lastPub.map { Self.realKarPct(price: $0, toplamMaliyet: calc.toplam, bagKg: bagKg) }
+                oncekiKarlilikPct: lastPub.map { Self.realKarPct(price: $0, toplamMaliyet: calc.toplam, bagKg: bagKg) },
+                oncekiRasyon: oncekiRas
             )
         }
     }
@@ -189,8 +213,9 @@ struct MaliyetTablosuView: View {
                     } label: {
                         Label("Sütunları Göster/Gizle", systemImage: "rectangle.lefthalf.inset.filled.arrow.left")
                     }
+                    ColumnWidthResetButton(store: colWidths)
                 } footer: {
-                    Text("\(visibleColumnOrder.count)/\(columnOrder.count) sütun görünüyor.")
+                    Text("\(visibleColumnOrder.count)/\(columnOrder.count) sütun görünüyor. Sütun genişliğini değiştirmek için başlığın sağ kenarındaki çizgiyi sürükleyin; çift dokunuş o sütunu varsayılana döndürür.")
                         .font(.caption2)
                 }
 
@@ -200,24 +225,27 @@ struct MaliyetTablosuView: View {
                         let naturalW = visibleColumnOrder.reduce(CGFloat(0)) { $0 + width(for: $1) }
                         VStack(alignment: .leading, spacing: 0) {
                             tableHeaderRow
-                            ForEach(snapshot) { r in
-                                tableDataRow(r, alt: (snapshot.firstIndex { $0.id == r.id } ?? 0) % 2 == 1)
+                            // enumerated: alt-satır rengi için O(n²) firstIndex araması yapılmaz
+                            ForEach(Array(snapshot.enumerated()), id: \.element.id) { idx, r in
+                                tableDataRow(r, alt: idx % 2 == 1)
                             }
                         }
+                        // fixedSize: tablo doğal boyutunu korur — dışarıdaki padding onu
+                        // sıkıştıramaz, dolayısıyla ölçüm → padding → ölçüm döngüsü oluşmaz.
+                        .fixedSize()
                         .background(GeometryReader { geo in
-                            Color.clear.onAppear { tableNaturalH = geo.size.height }
-                                       .onChange(of: geo.size.height) { _, h in tableNaturalH = h }
+                            Color.clear.onAppear { updateNaturalH(geo.size.height) }
+                                       .onChange(of: geo.size.height) { _, h in updateNaturalH(h) }
                         })
                         .scaleEffect(tableZoom, anchor: .topLeading)
-                        // scaleEffect görsel boyutu büyütür ama layout değişmez.
-                        // padding ile layout'a "büyüme payı" ekliyoruz.
-                        // tableNaturalH: GeometryReader ile ölçülen gerçek yükseklik.
-                        .padding(.bottom,   (tableZoom - 1) * tableNaturalH)
-                        .padding(.trailing, (tableZoom - 1) * naturalW)
+                        // scaleEffect görsel boyutu büyütür ama layout değişmez —
+                        // büyüme payını padding ile layout'a ekliyoruz.
+                        .padding(.bottom,   max(0, (tableZoom - 1) * tableNaturalH))
+                        .padding(.trailing, max(0, (tableZoom - 1) * naturalW))
                     }
                 } header: {
                     HStack {
-                        Text("\(brand) — \(costRows.count) ürün")
+                        Text("\(brand) — \(rows.count) ürün")
                         Spacer()
                         if let lp = lastPublished {
                             Text("Önceki liste: \(lp.revision.isEmpty ? lp.period : lp.revision)")
@@ -298,7 +326,8 @@ struct MaliyetTablosuView: View {
     // ── Sütun tanımları (dinamik — marka gider kalemlerine göre değişir) ───
 
     private func defaultColumnKeys() -> [String] {
-        var keys = ["kod", "urun", "rasyon", "ipCuval", "fire", "elektrik", "nakliye", "iscilik"]
+        var keys = ["kod", "urun", "oncekiRasyon", "rasyon", "rasyonFark", "rasyonFarkPct",
+                    "ipCuval", "fire", "elektrik", "nakliye", "iscilik"]
         keys += giderKalemleri.map { "gider:\($0.name)" }
         keys += ["toplamMaliyet", "kar", "brutKar", "pesin", "hesaplanan", "hesaplananFark", "yeniFiyat", "yeniKar", "onceki", "oncekiKarlilik", "fark"]
         return keys
@@ -308,8 +337,22 @@ struct MaliyetTablosuView: View {
         let defaults = defaultColumnKeys()
         let valid    = Set(defaults)
         let saved    = columnOrderRaw.split(separator: ",").map(String.init).filter { valid.contains($0) }
-        let missing  = defaults.filter { !saved.contains($0) }
-        columnOrder  = saved.isEmpty ? defaults : saved + missing
+        guard !saved.isEmpty else { columnOrder = defaults; return }
+
+        // Sonradan eklenen sütunlar listenin sonuna atılmaz; varsayılan düzendeki
+        // komşusunun yanına yerleştirilir. Kullanıcının kendi sıralaması korunur.
+        var result = saved
+        for (defIdx, key) in defaults.enumerated() where !result.contains(key) {
+            // Varsayılan sırada bu sütundan önce gelen, kullanıcıda da bulunan ilk sütun
+            let anchor = defaults[..<defIdx].last { result.contains($0) }
+            if let anchor, let at = result.firstIndex(of: anchor) {
+                result.insert(key, at: result.index(after: at))
+            } else {
+                result.insert(key, at: 0)   // öncesinde hiçbir şey yoksa başa
+            }
+        }
+        columnOrder = result
+        saveColumnOrder()
     }
 
     private func saveColumnOrder() {
@@ -339,7 +382,10 @@ struct MaliyetTablosuView: View {
         switch key {
         case "kod":            return "Kod"
         case "urun":           return "Ürün"
-        case "rasyon":         return "Rasyon ₺/t"
+        case "oncekiRasyon":   return "Eski Rasyon ₺/t"
+        case "rasyon":         return "Yeni Rasyon ₺/t"
+        case "rasyonFark":     return "Rasyon Fark ₺/t"
+        case "rasyonFarkPct":  return "Rasyon Fark%"
         case "ipCuval":        return label1
         case "fire":           return label2
         case "elektrik":       return label3
@@ -361,14 +407,21 @@ struct MaliyetTablosuView: View {
         }
     }
 
-    private func width(for key: String) -> CGFloat {
+    /// Kodda tanımlı varsayılan genişlik — kullanıcı ayarı yoksa bu kullanılır.
+    private func defaultWidth(for key: String) -> CGFloat {
         switch key {
         case "kod":                    return 56
         case "urun":                   return 150
-        case "kar", "brutKar", "yeniKar", "oncekiKarlilik": return 60
+        case "kar", "brutKar", "yeniKar", "oncekiKarlilik", "rasyonFarkPct": return 60
         case "hesaplananFark":  return 76
+        case "oncekiRasyon", "rasyonFark": return 88
         default:                       return 84
         }
+    }
+
+    /// Ekranda kullanılan genişlik — kullanıcı tutamaçla değiştirdiyse onun değeri.
+    private func width(for key: String) -> CGFloat {
+        colWidths.width(key, default: defaultWidth(for: key))
     }
 
     private func align(for key: String) -> TextAlignment { key == "urun" ? .leading : .center }
@@ -399,6 +452,7 @@ struct MaliyetTablosuView: View {
             .foregroundStyle(.blue)
         }
         .frame(width: width(for: key), alignment: align(for: key) == .leading ? .leading : .center)
+        .resizableColumn(key, default: defaultWidth(for: key), store: colWidths)
     }
 
     @ViewBuilder
@@ -416,7 +470,18 @@ struct MaliyetTablosuView: View {
         switch key {
         case "kod":           dataCell(r.code, w)
         case "urun":          dataCell(r.name, w, align: .leading)
-        case "rasyon":        dataCell(String(format: "%.0f", r.rasyon), w)
+        case "oncekiRasyon":
+            dataCell(r.oncekiRasyon.map { String(format: "%.0f", $0) } ?? "—", w,
+                     color: r.oncekiRasyon == nil ? .secondary : .primary)
+        case "rasyon":        dataCell(String(format: "%.0f", r.rasyon), w, bold: true)
+        case "rasyonFark":
+            let d = r.rasyonFark
+            dataCell(d.map { String(format: "%+.0f", $0) } ?? "—", w,
+                     color: (d ?? 0) > 0.5 ? .red : (d ?? 0) < -0.5 ? .green : .secondary)
+        case "rasyonFarkPct":
+            let p = r.rasyonFarkPct
+            dataCell(p.map { String(format: "%+.1f", $0) } ?? "—", w,
+                     color: (p ?? 0) > 0.05 ? .red : (p ?? 0) < -0.05 ? .green : .secondary)
         case "ipCuval":       dataCell(String(format: "%.0f", r.ipCuval), w)
         case "fire":          dataCell(String(format: "%.0f", r.fire), w)
         case "elektrik":      dataCell(String(format: "%.0f", r.elektrik), w)
@@ -567,7 +632,8 @@ struct MaliyetTablosuView: View {
                 pesin: $0.pesin, lastPublishedPesin: $0.lastPublishedPesin,
                 yeniFiyat: bulkDeltaTL != 0 ? $0.yeniFiyat : nil,
                 yeniKarPct: bulkDeltaTL != 0 ? $0.yeniKarPct : nil,
-                oncekiKarlilikPct: $0.oncekiKarlilikPct
+                oncekiKarlilikPct: $0.oncekiKarlilikPct,
+                oncekiRasyon: $0.oncekiRasyon
             )
         }
         let selectedColumns = columnOrder.filter { !pdfHiddenColumns.contains($0) }

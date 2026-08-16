@@ -11,9 +11,18 @@ struct CombinationsView: View {
     @Environment(\.dismiss) private var dismiss
 
     private let maxSlots = 10
-    private let colWidth: CGFloat = 64
-    private let codeWidth: CGFloat = 50
-    private let nameWidth: CGFloat = 150
+
+    // Varsayılan sütun genişlikleri — başlıktaki tutamaç ile değiştirilebilir, cihazda kalıcı.
+    // Slot sütunları (1–10) tek anahtar paylaşır: biri değişince hepsi birlikte değişir.
+    private static let defColWidth:  CGFloat = 64
+    private static let defCodeWidth: CGFloat = 50
+    private static let defNameWidth: CGFloat = 150
+
+    @StateObject private var colWidths = ColumnWidthStore(tableID: "kombinasyonlar")
+
+    private var colWidth:  CGFloat { colWidths.width("slot", default: Self.defColWidth) }
+    private var codeWidth: CGFloat { colWidths.width("kod",  default: Self.defCodeWidth) }
+    private var nameWidth: CGFloat { colWidths.width("ad",   default: Self.defNameWidth) }
 
     // Aktif hammaddeler: stokta olanlar önce, stokta olmayanlar sönük olarak altta
     private var activeIngs: [BFIngredient] {
@@ -42,8 +51,14 @@ struct CombinationsView: View {
                         .fontWeight(.semibold)
                 }
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Temizle") { combinations.removeAll() }
-                        .foregroundStyle(.red)
+                    Menu {
+                        Button(role: .destructive) { combinations.removeAll() } label: {
+                            Label("Kombinasyonları Temizle", systemImage: "trash")
+                        }
+                        ColumnWidthResetButton(store: colWidths)
+                    } label: {
+                        Text("Temizle").foregroundStyle(.red)
+                    }
                 }
             }
         }
@@ -57,14 +72,17 @@ struct CombinationsView: View {
                 .font(.caption.bold())
                 .frame(width: codeWidth, alignment: .leading)
                 .padding(.leading, 8)
+                .resizableColumn("kod", default: Self.defCodeWidth, store: colWidths)
             Text("Hammadde Adı")
                 .font(.caption.bold())
                 .frame(width: nameWidth, alignment: .leading)
+                .resizableColumn("ad", default: Self.defNameWidth, store: colWidths)
             ForEach(1...maxSlots, id: \.self) { slot in
                 Text("\(slot)")
                     .font(.caption.bold())
                     .frame(width: colWidth)
                     .foregroundStyle(hasAnyData(slot: slot) ? .teal : .secondary)
+                    .resizableColumn("slot", default: Self.defColWidth, store: colWidths)
             }
         }
         .padding(.vertical, 8)

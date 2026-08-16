@@ -34,7 +34,7 @@ struct BornOtomasyonApp: App {
 
     // MARK: - Container
 
-    private static let ckContainerID = "iCloud.com.rehabasmaci.BORNOTOM"
+    private static let ckContainerID = "iCloud.com.burcubasmaci.bornotomasyon"
 
     // Tüm modeller — hepsinde CloudKit için default değer zorunlu
     private static let allModels: [any PersistentModel.Type] = [

@@ -36,11 +36,18 @@ struct TopluFiyatGuncellemeView: View {
 
     @State private var selectedCodes: Set<String> = []
     @State private var deltaText:     String      = ""
+    @State private var isPercentMode  = false      // false = ₺ tutar, true = % oran
     @State private var previewRows:   [BulkChangeRow] = []
     @State private var isSaved        = false
     @State private var isGenerating   = false
     @State private var shareURL:      URL?  = nil
     @State private var showShare      = false
+
+    // Sütun genişlikleri — başlıktaki tutamaç sürüklenerek ayarlanır, cihazda kalıcı
+    @StateObject private var colWidths = ColumnWidthStore(tableID: "topluFiyatOnizleme")
+
+    /// Karşılaştırma bazı olarak seçilen arşiv (nil = en son yayınlanan).
+    @State private var baseArchiveID: PersistentIdentifier? = nil
 
     // Bir vade baremi için fiyat + kar% çifti (çuval cinsinden fiyat; ton fiyatı bagKg ile türetilir)
     struct TierValue {
@@ -71,12 +78,101 @@ struct TopluFiyatGuncellemeView: View {
         }
     }
 
-    private var deltaTL: Double {
+    /// Kullanıcının girdiği ham değer — mode'a göre ₺ tutar veya % oran.
+    private var deltaInput: Double {
         Double(deltaText.replacingOccurrences(of: ",", with: ".")) ?? 0
+    }
+
+    /// Bir ürünün mevcut fiyatına uygulanacak ₺ farkı (yüzde modunda fiyata göre türetilir).
+    private func deltaFor(basePrice: Double) -> Double {
+        isPercentMode ? basePrice * deltaInput / 100.0 : deltaInput
+    }
+
+    /// PDF özetinde gösterilecek temsilî ₺ fark (yüzde modunda ortalama).
+    private var reportDeltaTL: Double {
+        guard !previewRows.isEmpty else { return deltaInput }
+        let diffs = previewRows.map { $0.newPesinCuval - $0.oldPesinCuval }
+        return diffs.reduce(0, +) / Double(diffs.count)
+    }
+
+    /// Bu markanın tüm yayınlanmış listeleri — en yeniden eskiye.
+    private var publishedArchives: [PriceListArchive] {
+        allArchives.filter { $0.brand == brand && $0.isPublished }
+                   .sorted { $0.savedAt > $1.savedAt }
     }
 
     private var lastPublished: PriceListArchive? {
         PriceListArchive.lastPublished(brand: brand, in: allArchives)
+    }
+
+    /// Karşılaştırma bazı: seçili arşiv, seçim yoksa en son yayınlanan liste.
+    private var baseArchive: PriceListArchive? {
+        if let baseArchiveID,
+           let found = publishedArchives.first(where: { $0.persistentModelID == baseArchiveID }) {
+            return found
+        }
+        return lastPublished
+    }
+
+    /// Baz listedeki fiyatlar — kod → peşin ₺/çuval.
+    private var basePricesByCode: [String: Double] {
+        Dictionary((baseArchive?.prices ?? []).map { ($0.code, $0.pesin) },
+                   uniquingKeysWith: { a, _ in a })
+    }
+
+    /// Maliyetlendirme sırasını koruyan ürün kodu listesi (ForEach tip çıkarımını sadeleştirir).
+    private var productCodes: [String] {
+        rows.map { $0.formula.code }
+    }
+
+    private func rowFor(code: String) -> (formula: BlendFormula, meta: ProductPricingMeta?)? {
+        rows.first { $0.formula.code == code }
+    }
+
+    @ViewBuilder
+    private func productRow(code: String) -> some View {
+        if let row = rowFor(code: code) {
+            let isPicked  = selectedCodes.contains(code)
+            let published = basePricesByCode[code]
+            let current   = currentPesin(row)
+            let category  = (row.meta?.categoryGroup).flatMap { $0.isEmpty ? nil : $0 } ?? "Kategorisiz"
+            Button {
+                if isPicked { selectedCodes.remove(code) } else { selectedCodes.insert(code) }
+            } label: {
+                HStack {
+                    Image(systemName: isPicked ? "checkmark.square.fill" : "square")
+                        .foregroundStyle(isPicked ? Color.blue : Color.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(row.formula.name).font(.subheadline).foregroundStyle(.primary)
+                        Text(category).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 2) {
+                        // Baz listedeki (yayınlanmış) fiyat — ana değer
+                        Text(String(format: "%.2f ₺", published ?? current))
+                            .font(.caption.bold().monospacedDigit())
+                            .foregroundStyle(published == nil ? Color.secondary : Color.orange)
+                        if published == nil {
+                            Text("listede yok")
+                                .font(.caption2).foregroundStyle(.tertiary)
+                        } else if abs(current - (published ?? 0)) > 0.005 {
+                            // Yayınlanmış fiyat ile güncel maliyet hesabı ayrışmışsa göster
+                            Text(String(format: "güncel %.2f ₺", current))
+                                .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func archiveLabel(_ a: PriceListArchive) -> String {
+        var parts: [String] = []
+        if !a.revision.isEmpty { parts.append("Rev \(a.revision)") }
+        if !a.period.isEmpty   { parts.append(a.period) }
+        parts.append(a.displayDate)
+        return parts.joined(separator: " · ")
     }
 
     private static func karPct(price: Double, toplamMaliyet: Double, bagKg: Int) -> Double {
@@ -106,17 +202,79 @@ struct TopluFiyatGuncellemeView: View {
     var body: some View {
         NavigationStack {
             List {
+                // ── Baz liste seçici (geçmişe dönük listeler dâhil) ──────────
                 Section {
+                    if publishedArchives.isEmpty {
+                        Text("\(brand) için henüz yayınlanmış liste yok — karşılaştırma güncel hesaba göre yapılır.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Menu {
+                            Button {
+                                baseArchiveID = nil
+                            } label: {
+                                HStack {
+                                    Text("En Son Yayınlanan (otomatik)")
+                                    if baseArchiveID == nil { Image(systemName: "checkmark") }
+                                }
+                            }
+                            Divider()
+                            ForEach(publishedArchives) { arc in
+                                Button {
+                                    baseArchiveID = arc.persistentModelID
+                                } label: {
+                                    HStack {
+                                        Text(archiveLabel(arc))
+                                        if arc.persistentModelID == baseArchiveID {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack {
+                                Text("Baz Liste")
+                                Spacer()
+                                Text(baseArchive.map(archiveLabel) ?? "—")
+                                    .foregroundStyle(.orange)
+                                    .lineLimit(1)
+                                Image(systemName: "chevron.up.chevron.down").font(.caption2)
+                            }
+                        }
+                        .onChange(of: baseArchiveID) { _, _ in
+                            previewRows = []; isSaved = false
+                        }
+                    }
+                } header: {
+                    Text("Karşılaştırma Bazı")
+                } footer: {
+                    Text("Ürün fiyatları seçili yayınlanmış listeye göre gösterilir ve karşılaştırılır. Geçmiş listelerinizi de seçebilirsiniz.")
+                        .font(.caption2)
+                }
+
+                Section {
+                    Picker("Uygulama", selection: $isPercentMode) {
+                        Text("₺ Tutar").tag(false)
+                        Text("% Oran").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: isPercentMode) { _, _ in
+                        previewRows = []; isSaved = false
+                    }
+
                     HStack {
-                        Text("Zam / İndirim Tutarı (₺)")
+                        Text(isPercentMode ? "Zam / İndirim Oranı (%)" : "Zam / İndirim Tutarı (₺)")
                         Spacer()
-                        TextField("örn. 50 veya -30", text: $deltaText)
+                        TextField(isPercentMode ? "örn. 5 veya -3" : "örn. 50 veya -30", text: $deltaText)
                             .keyboardType(.numbersAndPunctuation)
                             .multilineTextAlignment(.trailing)
                             .frame(maxWidth: 140)
                     }
+                } header: {
+                    Text("Zam / İndirim")
                 } footer: {
-                    Text("Pozitif tutar zam, negatif tutar indirim uygular. Tutar, seçili ürünlerin güncel peşin fiyatına doğrudan eklenir.")
+                    Text(isPercentMode
+                         ? "Pozitif oran zam, negatif oran indirim uygular. Oran, her ürünün baz fiyatı üzerinden hesaplanır."
+                         : "Pozitif tutar zam, negatif tutar indirim uygular. Tutar, seçili ürünlerin baz fiyatına doğrudan eklenir.")
                         .font(.caption2)
                 }
 
@@ -131,31 +289,16 @@ struct TopluFiyatGuncellemeView: View {
                         Text("\(selectedCodes.count)/\(rows.count) ürün seçili")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    ForEach(rows, id: \.formula.code) { row in
-                        Button {
-                            if selectedCodes.contains(row.formula.code) {
-                                selectedCodes.remove(row.formula.code)
-                            } else {
-                                selectedCodes.insert(row.formula.code)
-                            }
-                        } label: {
-                            HStack {
-                                Image(systemName: selectedCodes.contains(row.formula.code) ? "checkmark.square.fill" : "square")
-                                    .foregroundStyle(selectedCodes.contains(row.formula.code) ? .blue : .secondary)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(row.formula.name).font(.subheadline).foregroundStyle(.primary)
-                                    Text(row.meta?.categoryGroup.isEmpty == false ? row.meta!.categoryGroup : "Kategorisiz")
-                                        .font(.caption2).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Text(String(format: "%.2f ₺", currentPesin(row)))
-                                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                            }
-                        }
-                        .buttonStyle(.plain)
+                    ForEach(productCodes, id: \.self) { code in
+                        productRow(code: code)
                     }
                 } header: {
                     Text("Ürünler")
+                } footer: {
+                    Text(baseArchive == nil
+                         ? "Yayınlanmış liste bulunmadığı için güncel maliyet hesabından türetilen fiyatlar gösteriliyor."
+                         : "Turuncu fiyatlar seçili baz listeden gelir. Farklıysa güncel maliyet hesabı ayrıca belirtilir.")
+                        .font(.caption2)
                 }
 
                 Section {
@@ -164,7 +307,7 @@ struct TopluFiyatGuncellemeView: View {
                     } label: {
                         Label("Önizle", systemImage: "eye")
                     }
-                    .disabled(selectedCodes.isEmpty || deltaTL == 0)
+                    .disabled(selectedCodes.isEmpty || deltaInput == 0)
                 } footer: {
                     Text("Önizle, hesaplar ve aşağıda geniş tabloda gösterir — henüz hiçbir şey kaydedilmez.")
                         .font(.caption2)
@@ -181,9 +324,19 @@ struct TopluFiyatGuncellemeView: View {
                             }
                         }
                     } header: {
-                        Text("Önizleme (\(previewRows.count) ürün) — Peşin/Kredi Kartı/30-60-90 Gün, Çuval+Ton")
+                        HStack {
+                            Text("Önizleme (\(previewRows.count) ürün) — Peşin/Kredi Kartı/30-60-90 Gün, Çuval+Ton")
+                            Spacer()
+                            if colWidths.hasCustomWidths {
+                                Menu {
+                                    ColumnWidthResetButton(store: colWidths)
+                                } label: {
+                                    Image(systemName: "arrow.left.and.right.square").font(.caption)
+                                }
+                            }
+                        }
                     } footer: {
-                        Text("Son yayınlanan liste: \(lastPublished?.revision ?? lastPublished?.period ?? "—"). Eski Kar% ve Eski Fiyat, son yayınlanan listeye göre hesaplanır.")
+                        Text("Baz liste: \(baseArchive.map(archiveLabel) ?? "—"). Eski Fiyat ve Eski Kar% bu listeye göre hesaplanır; zam/indirim de bu fiyat üzerine uygulanır. Sütun genişliğini değiştirmek için başlığın sağ kenarındaki çizgiyi sürükleyin.")
                             .font(.caption2)
                     }
 
@@ -234,99 +387,114 @@ struct TopluFiyatGuncellemeView: View {
 
     // ── Geniş tablo ────────────────────────────────────────────────────────
 
+    // Varsayılan genişlikler — kullanıcı başlıktaki tutamacı sürükleyerek her sütunu
+    // ayrı ayrı değiştirebilir (ColumnWidthStore ile kalıcı saklanır).
     private let wCode: CGFloat = 50, wName: CGFloat = 140, wMoney: CGFloat = 64, wKar: CGFloat = 48
+
+    /// Vade baremleri — sütun anahtarı öneki ve ekranda görünen etiketi.
+    private static let tiers: [(key: String, label: String)] = [
+        ("pesin", "Peşin"), ("kk", "Kredi K."), ("g30", "30 Gün"), ("g60", "60 Gün"), ("g90", "90 Gün")
+    ]
+
+    private func width(_ key: String, _ fallback: CGFloat) -> CGFloat {
+        colWidths.width(key, default: fallback)
+    }
 
     private var tableHeaderRow: some View {
         HStack(spacing: 0) {
-            headerCell("Kod", wCode)
-            headerCell("Ürün", wName, align: .leading)
-            headerCell("Rasyon ₺/t", wMoney)
-            headerCell("Gider ₺/t", wMoney)
-            headerCell("Toplam ₺/t", wMoney)
-            headerCell("Eski Çuval", wMoney)
-            headerCell("Eski Ton", wMoney)
-            headerCell("Eski Kar%", wKar)
-            tierHeader("Peşin")
-            tierHeader("Kredi K.")
-            tierHeader("30 Gün")
-            tierHeader("60 Gün")
-            tierHeader("90 Gün")
+            headerCell("Kod", "kod", wCode)
+            headerCell("Ürün", "urun", wName, align: .leading)
+            headerCell("Rasyon ₺/t", "rasyon", wMoney)
+            headerCell("Gider ₺/t", "gider", wMoney)
+            headerCell("Toplam ₺/t", "toplam", wMoney)
+            headerCell("Eski Çuval", "eskiCuval", wMoney)
+            headerCell("Eski Ton", "eskiTon", wMoney)
+            headerCell("Eski Kar%", "eskiKar", wKar)
+            ForEach(Self.tiers, id: \.key) { tier in
+                tierHeader(tier.label, tier.key)
+            }
         }
         .padding(.vertical, 6)
         .background(Color(.tertiarySystemGroupedBackground))
     }
 
     @ViewBuilder
-    private func tierHeader(_ label: String) -> some View {
-        headerCell("\(label) Çuval", wMoney)
-        headerCell("\(label) Ton", wMoney)
-        headerCell("\(label) Kar%", wKar)
+    private func tierHeader(_ label: String, _ key: String) -> some View {
+        headerCell("\(label) Çuval", "\(key).cuval", wMoney)
+        headerCell("\(label) Ton",   "\(key).ton",   wMoney)
+        headerCell("\(label) Kar%",  "\(key).kar",   wKar)
     }
 
-    private func headerCell(_ text: String, _ width: CGFloat, align: TextAlignment = .center) -> some View {
+    private func headerCell(_ text: String, _ key: String, _ fallback: CGFloat,
+                            align: TextAlignment = .center) -> some View {
         Text(text).font(.caption2.bold()).foregroundStyle(.secondary)
-            .frame(width: width, alignment: align == .leading ? .leading : .center)
+            .frame(width: width(key, fallback), alignment: align == .leading ? .leading : .center)
             .multilineTextAlignment(align)
+            .resizableColumn(key, default: fallback, store: colWidths)
     }
 
     @ViewBuilder
     private func tableDataRow(_ r: BulkChangeRow, alt: Bool) -> some View {
-        let pesinTier = r.tier(0, toplamMaliyet: r.toplamMaliyet, bagKg: r.bagKg)
-        let kkTier    = r.tier(vadeTekCekim, toplamMaliyet: r.toplamMaliyet, bagKg: r.bagKg)
-        let g30Tier   = r.tier(vade30, toplamMaliyet: r.toplamMaliyet, bagKg: r.bagKg)
-        let g60Tier   = r.tier(vade60, toplamMaliyet: r.toplamMaliyet, bagKg: r.bagKg)
-        let g90Tier   = r.tier(vade90, toplamMaliyet: r.toplamMaliyet, bagKg: r.bagKg)
         HStack(spacing: 0) {
-            dataCell(r.code, wCode)
-            dataCell(r.name, wName, align: .leading)
-            dataCell(String(format: "%.0f", r.rasyon), wMoney)
-            dataCell(String(format: "%.0f", r.giderToplam), wMoney)
-            dataCell(String(format: "%.0f", r.toplamMaliyet), wMoney)
-            dataCell(String(format: "%.2f", r.oldPesinCuval), wMoney)
-            dataCell(String(format: "%.0f", r.oldPesinCuval / Double(r.bagKg) * 1000), wMoney)
-            dataCell(r.oldKarPct.map { String(format: "%.1f", $0) } ?? "—", wKar)
-            tierCells(pesinTier)
-            tierCells(kkTier)
-            tierCells(g30Tier)
-            tierCells(g60Tier)
-            tierCells(g90Tier)
+            dataCell(r.code, "kod", wCode)
+            dataCell(r.name, "urun", wName, align: .leading)
+            dataCell(String(format: "%.0f", r.rasyon), "rasyon", wMoney)
+            dataCell(String(format: "%.0f", r.giderToplam), "gider", wMoney)
+            dataCell(String(format: "%.0f", r.toplamMaliyet), "toplam", wMoney)
+            dataCell(String(format: "%.2f", r.oldPesinCuval), "eskiCuval", wMoney)
+            dataCell(String(format: "%.0f", r.oldPesinCuval / Double(r.bagKg) * 1000), "eskiTon", wMoney)
+            dataCell(r.oldKarPct.map { String(format: "%.1f", $0) } ?? "—", "eskiKar", wKar)
+            ForEach(Self.tiers, id: \.key) { tier in
+                tierCells(r.tier(vadePct(tier.key), toplamMaliyet: r.toplamMaliyet, bagKg: r.bagKg),
+                          tier.key)
+            }
         }
         .padding(.vertical, 4)
         .background(alt ? Color(.systemGroupedBackground) : Color.clear)
     }
 
+    private func vadePct(_ key: String) -> Double {
+        switch key {
+        case "kk":  return vadeTekCekim
+        case "g30": return vade30
+        case "g60": return vade60
+        case "g90": return vade90
+        default:    return 0        // peşin
+        }
+    }
+
     @ViewBuilder
-    private func tierCells(_ t: TierValue) -> some View {
-        dataCell(String(format: "%.2f", t.cuval), wMoney, bold: true)
-        dataCell(String(format: "%.0f", t.ton), wMoney)
-        dataCell(String(format: "%.1f", t.karPct), wKar,
+    private func tierCells(_ t: TierValue, _ key: String) -> some View {
+        dataCell(String(format: "%.2f", t.cuval), "\(key).cuval", wMoney, bold: true)
+        dataCell(String(format: "%.0f", t.ton),   "\(key).ton",   wMoney)
+        dataCell(String(format: "%.1f", t.karPct), "\(key).kar",  wKar,
                  color: t.karPct < 0 ? .red : .green)
     }
 
-    private func dataCell(_ text: String, _ width: CGFloat, align: TextAlignment = .center,
+    private func dataCell(_ text: String, _ key: String, _ fallback: CGFloat,
+                          align: TextAlignment = .center,
                           bold: Bool = false, color: Color = .primary) -> some View {
         Text(text)
             .font(bold ? .caption.bold().monospacedDigit() : .caption.monospacedDigit())
             .foregroundStyle(color)
-            .frame(width: width, alignment: align == .leading ? .leading : .center)
+            .frame(width: width(key, fallback), alignment: align == .leading ? .leading : .center)
             .lineLimit(1)
     }
 
     // ── Hesaplama / kaydetme / paylaşma ────────────────────────────────────
 
     private func buildPreview() {
-        let archive = lastPublished
-        let publishedByCode = Dictionary(
-            (archive?.prices ?? []).map { ($0.code, $0.pesin) }, uniquingKeysWith: { a, _ in a }
-        )
+        let publishedByCode = basePricesByCode
         previewRows = rows
             .filter { selectedCodes.contains($0.formula.code) }
             .map { row -> BulkChangeRow in
                 let c = calc(row)
-                let lastPub = publishedByCode[row.formula.code]
-                let oldPesinCuval = lastPub ?? c.pesin0
-                let newPesinCuval = max(0, c.pesin0 + deltaTL)
-                let oldKar = lastPub.map { Self.karPct(price: $0, toplamMaliyet: c.toplam, bagKg: c.bagKg) }
+                let basePub = publishedByCode[row.formula.code]
+                // Zam/indirim DAİMA baz listedeki yayınlanmış fiyat üzerine uygulanır;
+                // o üründe yayınlanmış fiyat yoksa güncel hesaba düşülür.
+                let oldPesinCuval = basePub ?? c.pesin0
+                let newPesinCuval = max(0, oldPesinCuval + deltaFor(basePrice: oldPesinCuval))
+                let oldKar = Self.karPct(price: oldPesinCuval, toplamMaliyet: c.toplam, bagKg: c.bagKg)
                 let newKar = Self.karPct(price: newPesinCuval, toplamMaliyet: c.toplam, bagKg: c.bagKg)
                 return BulkChangeRow(
                     code: row.formula.code, name: row.formula.name,
@@ -334,7 +502,7 @@ struct TopluFiyatGuncellemeView: View {
                     bagKg: c.bagKg,
                     oldPesinCuval: oldPesinCuval, oldKarPct: oldKar,
                     newPesinCuval: newPesinCuval, newKarPct: newKar,
-                    lastPublishedPesin: lastPub
+                    lastPublishedPesin: basePub
                 )
             }
         isSaved = false
@@ -365,7 +533,7 @@ struct TopluFiyatGuncellemeView: View {
             )
         }
         let capturedBrand = brand
-        let capturedDelta = deltaTL
+        let capturedDelta = reportDeltaTL
         Task.detached(priority: .userInitiated) {
             let data = MaliyetTabloPDFService.generateTopluGuncellemeRaporu(
                 rows: pdfRows, brand: capturedBrand, deltaTL: capturedDelta

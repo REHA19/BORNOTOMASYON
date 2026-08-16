@@ -70,6 +70,13 @@ struct MaliyetTabloPDFService {
         var yeniFiyat:           Double? = nil   // TL toplu ayarı uygulanmışsa önizlenen yeni fiyat
         var yeniKarPct:          Double? = nil   // yeniFiyat'a karşılık gelen gerçek kar oranı
         var oncekiKarlilikPct:   Double? = nil   // son yayınlanan fiyatın GÜNCEL maliyete göre kâr oranı
+        var oncekiRasyon:        Double? = nil   // son yayınlanan listedeki rasyon maliyeti ₺/ton
+
+        var rasyonFark: Double? { oncekiRasyon.map { rasyon - $0 } }
+        var rasyonFarkPct: Double? {
+            guard let o = oncekiRasyon, o > 0 else { return nil }
+            return (rasyon - o) / o * 100
+        }
     }
 
     /// Ekrandaki sütun key sistemiyle birebir aynı: hangi sütunların PDF'de görüneceği
@@ -84,7 +91,10 @@ struct MaliyetTabloPDFService {
             switch key {
             case "kod":            return "Kod"
             case "urun":           return "Ürün"
-            case "rasyon":         return "Rasyon ₺/t"
+            case "oncekiRasyon":   return "Eski Rasyon ₺/t"
+            case "rasyon":         return "Yeni Rasyon ₺/t"
+            case "rasyonFark":     return "Rasyon Fark ₺/t"
+            case "rasyonFarkPct":  return "R.Fark%"
             case "ipCuval":        return label1
             case "fire":           return label2
             case "elektrik":       return label3
@@ -106,7 +116,8 @@ struct MaliyetTabloPDFService {
             switch key {
             case "kod":  return 36
             case "urun": return 100
-            case "kar", "brutKar", "yeniKar", "oncekiKarlilik": return 32
+            case "kar", "brutKar", "yeniKar", "oncekiKarlilik", "rasyonFarkPct": return 32
+            case "oncekiRasyon", "rasyonFark": return 54
             default:     return 50
             }
         }
@@ -114,7 +125,10 @@ struct MaliyetTabloPDFService {
             switch key {
             case "kod":           return r.code
             case "urun":          return r.name
+            case "oncekiRasyon":  return r.oncekiRasyon.map { String(format: "%.0f", $0) } ?? "—"
             case "rasyon":        return String(format: "%.0f", r.rasyon)
+            case "rasyonFark":    return r.rasyonFark.map { String(format: "%+.0f", $0) } ?? "—"
+            case "rasyonFarkPct": return r.rasyonFarkPct.map { String(format: "%+.1f", $0) } ?? "—"
             case "ipCuval":       return String(format: "%.0f", r.ipCuval)
             case "fire":          return String(format: "%.0f", r.fire)
             case "elektrik":      return String(format: "%.0f", r.elektrik)

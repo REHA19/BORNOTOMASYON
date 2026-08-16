@@ -141,10 +141,12 @@ struct MultiBlendDetailView: View {
     @State private var editContext:           FormulaEditContext?   = nil
     @State private var editingIngredient:     FeedIngredient?       = nil
     @State private var showAdder              = false
+    @State private var showImport             = false
     @State private var showReport             = false
     @State private var showSend               = false
     @State private var showProductionConfirm  = false
-    @State private var formulaSort:           FormulaSort = .tonDesc
+    @AppStorage("multiblend_formula_sort_v1")
+    private var formulaSort:                  FormulaSort = .tonDesc
     @State private var pickedProductionMonth: Date?                 = nil
     @State private var costHistoryFormula:    BlendFormula?         = nil
     @State private var nutrientCompFormula:   BlendFormula?         = nil
@@ -159,10 +161,25 @@ struct MultiBlendDetailView: View {
     @State private var reportScopeCodes:      [String]?           = nil
 
     enum FormulaSort: String, CaseIterable {
-        case tonDesc  = "Tonaj ↓"
-        case tonAsc   = "Tonaj ↑"
-        case nameAsc  = "Ad A→Z"
-        case nameDesc = "Ad Z→A"
+        case tonDesc   = "Tonaj ↓"
+        case tonAsc    = "Tonaj ↑"
+        case nameAsc   = "Ad A→Z"
+        case nameDesc  = "Ad Z→A"
+        case costDesc  = "Maliyet ₺/ton ↓"
+        case costAsc   = "Maliyet ₺/ton ↑"
+        case totalDesc = "Aylık Tutar ₺ ↓"
+        case totalAsc  = "Aylık Tutar ₺ ↑"
+
+        /// Menüde başlıklandırma için — isim / tonaj / maliyet grupları
+        enum Kind { case name, ton, cost }
+        var kind: Kind {
+            switch self {
+            case .nameAsc, .nameDesc:                          return .name
+            case .tonDesc, .tonAsc:                            return .ton
+            case .costDesc, .costAsc, .totalDesc, .totalAsc:   return .cost
+            }
+        }
+        static func options(_ kind: Kind) -> [FormulaSort] { allCases.filter { $0.kind == kind } }
     }
     @State private var solverPulse       = false   // yanıp-sönme animasyonu
     @State private var selectedIngUsage: CombinedIng?         = nil
@@ -187,17 +204,32 @@ struct MultiBlendDetailView: View {
         let productionTons: Double
     }
 
+    /// Bir formülün geçerli ₺/ton maliyeti:
+    /// bu oturumda Hesapla çalıştıysa çözüm sonucu, yoksa formülde kayıtlı son maliyet.
+    private func effectiveCostPerTon(_ f: BlendFormula) -> Double {
+        if let solved = solveResults[f.code]?.cost, solved > 0 { return solved }
+        if f.currentCostTL > 0 { return f.currentCostTL }
+        return f.recordedCostTL
+    }
+
     // Formulas in this group — user-defined order, then sorted by formulaSort
     private var groupFormulas: [BlendFormula] {
         let base = group.formulaCodes.compactMap { code in
             allFormulas.first { $0.code == code }
         }
         let tons = group.productionTons
+        func monthlyTotal(_ f: BlendFormula) -> Double {
+            effectiveCostPerTon(f) * (tons[f.code] ?? 0)
+        }
         switch formulaSort {
-        case .tonDesc:  return base.sorted { (tons[$0.code] ?? 0) > (tons[$1.code] ?? 0) }
-        case .tonAsc:   return base.sorted { (tons[$0.code] ?? 0) < (tons[$1.code] ?? 0) }
-        case .nameAsc:  return base.sorted { $0.name < $1.name }
-        case .nameDesc: return base.sorted { $0.name > $1.name }
+        case .tonDesc:   return base.sorted { (tons[$0.code] ?? 0) > (tons[$1.code] ?? 0) }
+        case .tonAsc:    return base.sorted { (tons[$0.code] ?? 0) < (tons[$1.code] ?? 0) }
+        case .nameAsc:   return base.sorted { $0.name < $1.name }
+        case .nameDesc:  return base.sorted { $0.name > $1.name }
+        case .costDesc:  return base.sorted { effectiveCostPerTon($0) > effectiveCostPerTon($1) }
+        case .costAsc:   return base.sorted { effectiveCostPerTon($0) < effectiveCostPerTon($1) }
+        case .totalDesc: return base.sorted { monthlyTotal($0) > monthlyTotal($1) }
+        case .totalAsc:  return base.sorted { monthlyTotal($0) < monthlyTotal($1) }
         }
     }
 
@@ -303,13 +335,26 @@ struct MultiBlendDetailView: View {
         groupFormulas.compactMap { group.productionTons[$0.code] }.reduce(0, +)
     }
 
-    // Toplam üretim maliyeti (son çözüm ya da lastSolve)
+    /// Bu oturumda "Hesapla" çalıştırıldı mı — üst maliyet kutusunun başlığını belirler.
+    private var hasFreshSolve: Bool { !solveResults.isEmpty }
+
+    // Toplam üretim maliyeti (bu oturumda çözüldüyse çözüm, yoksa son kayıtlı maliyet)
     private var currentTotalTL: Double {
         groupFormulas.reduce(0.0) { sum, f in
-            let cost = solveResults[f.code]?.cost ?? f.currentCostTL
             let tons = group.productionTons[f.code] ?? 0
-            return sum + cost * tons
+            return sum + effectiveCostPerTon(f) * tons
         }
+    }
+
+    // Üretime kaydedilmiş (kilitli) toplam maliyet — kilit anındaki maliyet × kilit anındaki tonaj
+    private var productionTotalTL: Double? {
+        guard group.hasProductionSnapshot else { return nil }
+        let snap       = group.productionSnapshot
+        let lockedTons = group.productionSnapshotTons
+        let total = groupFormulas.reduce(0.0) { sum, f in
+            sum + (snap[f.code] ?? 0) * (lockedTons[f.code] ?? 0)
+        }
+        return total
     }
 
     // Çözüm öncesi toplam maliyet (previousCosts doluysa)
@@ -478,6 +523,9 @@ struct MultiBlendDetailView: View {
                 available: allFormulas.filter { !group.formulaCodes.contains($0.code) }
             )
         }
+        .sheet(isPresented: $showImport, onDismiss: refreshCombinedIngs) {
+            MultiBlendImportSheet(group: group)
+        }
         .sheet(item: $selectedIngUsage) { ing in
             IngredientUsageDetailSheet(
                 ingredient:     ing,
@@ -644,22 +692,13 @@ struct MultiBlendDetailView: View {
             HStack(spacing: 10) {
                 Text("Formüller (\(groupFormulas.count))")
                 Spacer()
-                // Sıralama menüsü
+                // Sıralama menüsü — isme / tonaja / maliyete göre
                 Menu {
-                    ForEach(FormulaSort.allCases, id: \.self) { opt in
-                        Button {
-                            formulaSort = opt
-                        } label: {
-                            HStack {
-                                Text(opt.rawValue)
-                                if formulaSort == opt {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                    }
+                    Section("İsme Göre")    { sortButtons(.name) }
+                    Section("Tonaja Göre")  { sortButtons(.ton) }
+                    Section("Maliyete Göre") { sortButtons(.cost) }
                 } label: {
-                    Label(formulaSort.rawValue, systemImage: "arrow.up.arrow.down")
+                    Label(formulaSort.rawValue, systemImage: "line.3.horizontal.decrease.circle")
                         .font(.caption)
                 }
                 if productionVM.isLoading {
@@ -700,7 +739,18 @@ struct MultiBlendDetailView: View {
                         }
                     }
                 }
-                Button { showAdder = true } label: {
+                Menu {
+                    Button {
+                        showAdder = true
+                    } label: {
+                        Label("Kayıtlı Formüllerden Ekle", systemImage: "list.bullet.rectangle")
+                    }
+                    Button {
+                        showImport = true
+                    } label: {
+                        Label("TXT Dosyasından İçe Aktar", systemImage: "square.and.arrow.down")
+                    }
+                } label: {
                     Image(systemName: "plus.circle").font(.callout)
                 }
             }
@@ -709,14 +759,26 @@ struct MultiBlendDetailView: View {
         }
     }
 
+    @ViewBuilder
+    private func sortButtons(_ kind: FormulaSort.Kind) -> some View {
+        ForEach(FormulaSort.options(kind), id: \.self) { opt in
+            Button {
+                formulaSort = opt
+            } label: {
+                HStack {
+                    Text(opt.rawValue)
+                    if formulaSort == opt { Image(systemName: "checkmark") }
+                }
+            }
+        }
+    }
+
     private var formulasTotalFooter: some View {
         let tons       = group.productionTons
         let matched    = groupFormulas.filter { (tons[$0.code] ?? 0) > 0 }
         let total      = matched.reduce(0.0) { $0 + (tons[$1.code] ?? 0) }
         let totalCost  = matched.reduce(0.0) { sum, f in
-            let cost = solveResults[f.code]?.cost ?? f.currentCostTL
-            let t    = tons[f.code] ?? 0
-            return sum + cost * t
+            sum + effectiveCostPerTon(f) * (tons[f.code] ?? 0)
         }
 
         return Group {
@@ -1032,27 +1094,53 @@ struct MultiBlendDetailView: View {
         return "\(prefix)\(str) ₺"
     }
 
+    /// Renk yardımcısı — negatif fark (ucuzlama) yeşil, pozitif (pahalılaşma) kırmızı.
+    private func diffColor(_ diff: Double) -> Color {
+        diff < -0.5 ? .green : diff > 0.5 ? .red : .secondary
+    }
+
+    private func diffIcon(_ diff: Double) -> String {
+        diff < -0.5 ? "arrow.down.circle.fill" : diff > 0.5 ? "arrow.up.circle.fill" : "equal.circle.fill"
+    }
+
+    // Üst maliyet kutusu:
+    //  • "Hesapla" basılmadan → formüllerde kayıtlı SON MALİYET gösterilir
+    //  • "Hesapla" sonrası    → yeni ÇÖZÜM MALİYETİ gösterilir (fiyat değişimi buraya yansır)
+    //  • Altında her zaman ÜRETİM KAYDI ve ikisi arasındaki FARK durur
+    //  • "Üretime Kaydet" sonrası ikisi de aynı rakamı gösterir (fark = 0)
     private var costSummarySection: some View {
         Section {
             VStack(spacing: 8) {
-                // ── Son Çözüm Maliyeti ────────────────────────────────────────
+                // ── Çözüm / Son kayıtlı maliyet ───────────────────────────────
+                let curr = currentTotalTL
                 HStack {
-                    Label("Son Çözüm Maliyeti", systemImage: "cpu")
+                    Label(hasFreshSolve ? "Çözüm Maliyeti" : "Son Kayıtlı Maliyet",
+                          systemImage: hasFreshSolve ? "cpu" : "clock.arrow.circlepath")
                         .font(.subheadline.bold())
                         .foregroundStyle(.primary)
                     Spacer()
-                    let curr = currentTotalTL
                     Text(curr > 0 ? formatTL(curr) : "—")
                         .font(.title3.bold())
                         .foregroundStyle(curr > 0 ? .orange : .secondary)
                 }
+                if totalProductionTons > 0 && curr > 0 {
+                    HStack {
+                        Text(hasFreshSolve
+                             ? "Güncel hammadde fiyatlarıyla çözüldü"
+                             : "Hesapla'ya basılana kadar önceki çözümün maliyeti")
+                            .font(.caption2).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(String(format: "ort. %.0f ₺/ton", curr / totalProductionTons))
+                            .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                }
 
+                // ── Çözüm öncesi maliyetle karşılaştırma ──────────────────────
                 if let prev = previousTotalTL, prev > 0 {
-                    let curr = currentTotalTL
                     let diff = curr - prev
                     Divider()
                     HStack {
-                        Text("Önceki çözüm")
+                        Text("Çözüm öncesi")
                             .font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Text(formatTL(prev))
@@ -1060,32 +1148,20 @@ struct MultiBlendDetailView: View {
                     }
                     HStack {
                         HStack(spacing: 4) {
-                            Image(systemName: diff < -0.5 ? "arrow.down.circle.fill"
-                                           : diff > 0.5  ? "arrow.up.circle.fill"
-                                                         : "minus.circle")
-                                .foregroundStyle(diff < -0.5 ? .green : diff > 0.5 ? .red : .secondary)
-                                .font(.caption)
-                            Text("Fark")
-                                .font(.caption.bold())
-                                .foregroundStyle(diff < -0.5 ? .green : diff > 0.5 ? .red : .secondary)
+                            Image(systemName: diffIcon(diff)).font(.caption)
+                            Text("Çözüm Farkı").font(.caption.bold())
                         }
+                        .foregroundStyle(diffColor(diff))
                         Spacer()
-                        let pct = prev > 0 ? diff / prev * 100 : 0
+                        let pct = diff / prev * 100
                         Text("\(formatTL(diff, sign: true))  (%\(String(format: "%+.1f", pct)))")
                             .font(.caption.bold())
-                            .foregroundStyle(diff < -0.5 ? .green : diff > 0.5 ? .red : .secondary)
+                            .foregroundStyle(diffColor(diff))
                     }
                 }
 
-                // ── Üretim Kayıt Maliyeti ─────────────────────────────────────
-                if group.hasProductionSnapshot {
-                    let snap     = group.productionSnapshot
-                    let lockedTons = group.productionSnapshotTons
-                    let prodTL   = groupFormulas.reduce(0.0) { sum, f in
-                        let cost = snap[f.code] ?? 0
-                        let tons = lockedTons[f.code] ?? 0
-                        return sum + cost * tons
-                    }
+                // ── Üretim kaydı (kilitli maliyet) + fark ─────────────────────
+                if let prodTL = productionTotalTL {
                     Divider()
                     HStack {
                         Label("Üretim Kaydı", systemImage: "checkmark.seal.fill")
@@ -1096,21 +1172,32 @@ struct MultiBlendDetailView: View {
                             .font(.title3.bold())
                             .foregroundStyle(.indigo)
                     }
-                    let snapDateStr: String = {
-                        let fmt = DateFormatter()
-                        fmt.locale = Locale(identifier: "tr_TR")
-                        fmt.dateFormat = "d MMM yyyy HH:mm"
-                        return fmt.string(from: group.productionSnapshotAt)
-                    }()
                     HStack {
-                        Text("Kilitlenme: \(snapDateStr)")
+                        Text("Kilitlenme: \(snapshotDateText)")
                             .font(.caption2).foregroundStyle(.secondary)
                         Spacer()
-                        let diff2 = currentTotalTL - prodTL
-                        if abs(diff2) > 0.5 {
-                            Text(formatTL(diff2, sign: true))
-                                .font(.caption2.bold())
-                                .foregroundStyle(diff2 < 0 ? .green : .red)
+                        if let lockedTotalTons = lockedProductionTons, lockedTotalTons > 0, prodTL > 0 {
+                            Text(String(format: "ort. %.0f ₺/ton", prodTL / lockedTotalTons))
+                                .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        }
+                    }
+                    // Üretim kaydına göre fark — Üretime Kaydet sonrası 0 ₺ olur,
+                    // yani üstteki iki rakam birebir aynı gösterilir.
+                    if prodTL > 0 {
+                        let diff = curr - prodTL
+                        let pct  = diff / prodTL * 100
+                        HStack {
+                            HStack(spacing: 4) {
+                                Image(systemName: diffIcon(diff)).font(.caption)
+                                Text("Üretim Kaydı Farkı").font(.caption.bold())
+                            }
+                            .foregroundStyle(diffColor(diff))
+                            Spacer()
+                            Text(abs(diff) < 0.5
+                                 ? "0 ₺  (aynı)"
+                                 : "\(formatTL(diff, sign: true))  (%\(String(format: "%+.1f", pct)))")
+                                .font(.caption.bold())
+                                .foregroundStyle(diffColor(diff))
                         }
                     }
                 }
@@ -1119,13 +1206,29 @@ struct MultiBlendDetailView: View {
         }
     }
 
+    /// Kilit anındaki toplam tonaj — üretim kaydının ₺/ton ortalaması için
+    private var lockedProductionTons: Double? {
+        guard group.hasProductionSnapshot else { return nil }
+        let lockedTons = group.productionSnapshotTons
+        return groupFormulas.reduce(0.0) { $0 + (lockedTons[$1.code] ?? 0) }
+    }
+
+    private var snapshotDateText: String {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "tr_TR")
+        fmt.dateFormat = "d MMM yyyy HH:mm"
+        return fmt.string(from: group.productionSnapshotAt)
+    }
+
     // MARK: - Üretim Kaydı
 
     private func saveToProduction() {
         var snap:     [String: Double] = [:]
         var snapTons: [String: Double] = [:]
         for formula in groupFormulas {
-            let cost = solveResults[formula.code]?.cost ?? formula.currentCostTL
+            // Üst kutudaki "Çözüm Maliyeti" ile birebir aynı kaynak — kaydettikten
+            // sonra iki rakamın da aynı çıkması için aynı hesap kullanılmalı.
+            let cost = effectiveCostPerTon(formula)
             let tons = group.productionTons[formula.code] ?? 0
             snap[formula.code]     = cost
             snapTons[formula.code] = tons
@@ -1256,7 +1359,10 @@ struct MultiBlendDetailView: View {
             cachedCombinedIngs.map { ($0.code, $0.monthlyTons) }, uniquingKeysWith: { first, _ in first }
         )
 
-        for formula in groupFormulas { previousCosts[formula.code] = formula.currentCostTL }
+        for formula in groupFormulas {
+            previousCosts[formula.code] = formula.currentCostTL > 0
+                ? formula.currentCostTL : formula.recordedCostTL
+        }
         solveResults = [:]
 
         // Kütüphanede isAvailable=false olan hammaddeleri formüllerde hasStock=false yap

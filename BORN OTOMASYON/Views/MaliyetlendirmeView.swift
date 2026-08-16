@@ -208,7 +208,7 @@ struct MaliyetlendirmeView: View {
                                 Label("Ürün Sıralama", systemImage: "arrow.up.arrow.down")
                             }
                             Button { showArchive = true } label: {
-                                Label("Arşiv", systemImage: "clock.arrow.circlepath")
+                                Label("Fiyat Arşivi", systemImage: "clock.arrow.circlepath")
                             }
                             Button { showFiyatDegisim = true } label: {
                                 Label("Fiyat Değişim Raporu", systemImage: "chart.line.uptrend.xyaxis")
@@ -315,7 +315,16 @@ struct MaliyetlendirmeView: View {
                 PriceListArchiveView(brand: selectedBrand)
             }
             .navigationDestination(isPresented: $showFiyatDegisim) {
-                FiyatDegisimRaporuView(brand: selectedBrand)
+                FiyatDegisimRaporuView(
+                    brand: selectedBrand,
+                    draftPrices: PriceSnapBuilder.build(
+                        rows: rows,
+                        ipCuval: ipCuval, firePct: firePct,
+                        elektrik: elektrik, nakliye: nakliye, iscilik: iscilik,
+                        globalKarPct: karPct, extraItems: extraItems
+                    ),
+                    displayOrder: rows.map(\.formula.code)
+                )
             }
         }
     }

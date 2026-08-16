@@ -202,6 +202,19 @@ struct MultiBlendSnapshot: @unchecked Sendable {
     }
 
     var totalProductionTons: Double { entries.map(\.productionTons).reduce(0, +) }
+
+    /// Bu hammaddenin fiilen kullanıldığı (mix% > 0) formül sayısı
+    func formulaCount(ingCode: String) -> Int {
+        entries.filter { e in
+            (e.ingredients.first { $0.code == ingCode }?.mixPct ?? 0) > 0.001
+        }.count
+    }
+
+    /// Toplam üretim içindeki kullanım oranı (%) — "1 ton mamulde kaç kg" ile aynı orandır
+    func usageSharePct(ingCode: String) -> Double {
+        guard totalProductionTons > 0.0001 else { return 0 }
+        return totalUsageTons(ingCode: ingCode) / totalProductionTons * 100.0
+    }
 }
 
 // MARK: - MultiBlendExportService (thread-safe)
@@ -244,6 +257,43 @@ struct MultiBlendExportService {
         entry.constraints.filter { config.isNutrientVisible($0.resolvedDisplayName) }
     }
 
+    // MARK: - Toplu hammadde kullanım satırları (tüm raporların ortak kaynağı)
+
+    struct SharedUsageRow {
+        let code:         String
+        let name:         String
+        let formulaCount: Int
+        let tons:         Double    // aylık toplam karışım (ton)
+        let usagePct:     Double    // toplam üretime oranı (%)
+        let price:        Double    // ₺/ton
+        let cost:         Double    // aylık toplam maliyet (₺)
+        var costPct:      Double    // toplam hammadde maliyeti içindeki payı (%)
+        let minTons:      Double?   // grup aylık MIN limiti
+        let maxTons:      Double?   // grup aylık MAX limiti
+    }
+
+    func sharedUsageRows() -> [SharedUsageRow] {
+        var rows: [SharedUsageRow] = []
+        var grandCost = 0.0
+        for (code, name) in sortedSharedIngs() {
+            let tons  = snap.totalUsageTons(ingCode: code)
+            let price = snap.lib(code)?.priceTL ?? 0
+            let cost  = price > 0 ? tons * price : 0
+            grandCost += cost
+            let limit = snap.ingLimits[code]
+            rows.append(SharedUsageRow(
+                code: code, name: name,
+                formulaCount: snap.formulaCount(ingCode: code),
+                tons: tons, usagePct: snap.usageSharePct(ingCode: code),
+                price: price, cost: cost, costPct: 0,
+                minTons: limit?.minTons, maxTons: limit?.maxTons
+            ))
+        }
+        guard grandCost > 0 else { return rows }
+        for i in rows.indices { rows[i].costPct = rows[i].cost / grandCost * 100 }
+        return rows
+    }
+
     // MARK: - TXT
 
     func generateTXT() -> String {
@@ -264,29 +314,22 @@ struct MultiBlendExportService {
         // Shared ingredient table
         lines += [
             divider("ORTAK HAMMADDE AYLIK KARIŞIM KULLANIMI"),
-            pad("KOD", 8) + pad("HAMMADDE", 32) + col("KARIŞIM (ton)", 16) + col("FİYAT (TL/t)", 16) + col("TOPLAM MALİYET", 18) + col("%", 8),
-            String(repeating: "─", count: 100)
+            pad("KOD", 8) + pad("HAMMADDE", 32) + col("KARIŞIM (ton)", 16) + col("%KULLANIM", 12) + col("FİYAT (TL/t)", 16) + col("TOPLAM MALİYET", 18) + col("%MALİYET", 10),
+            String(repeating: "─", count: 112)
         ]
-        var grandCost = 0.0
-        var grandTons = 0.0
-        var sharedItems: [(code: String, name: String, tons: Double, price: Double, cost: Double)] = []
-        for (code, name) in sortedSharedIngs() {
-            let tons  = snap.totalUsageTons(ingCode: code)
-            let price = snap.lib(code)?.priceTL ?? 0
-            let cost  = price > 0 ? tons * price : 0
-            grandCost += cost
-            grandTons += tons
-            sharedItems.append((code, name, tons, price, cost))
-        }
+        let sharedItems = sharedUsageRows()
+        let grandTons = sharedItems.reduce(0.0) { $0 + $1.tons }
+        let grandCost = sharedItems.reduce(0.0) { $0 + $1.cost }
         for item in sharedItems {
             let priceS = item.price > 0 ? fmtTL(item.price) : "—"
             let costS  = item.cost  > 0 ? fmtTL(item.cost)  : "—"
-            let pct    = grandCost > 0 ? item.cost / grandCost * 100 : 0
-            let pctS   = pct > 0 ? f1(pct) + "%" : "—"
-            lines.append(pad(item.code, 8) + pad(item.name, 32) + col(f2(item.tons), 16) + col(priceS, 16) + col(costS, 18) + col(pctS, 8))
+            let pctS   = item.costPct > 0 ? f1(item.costPct) + "%" : "—"
+            let useS   = item.usagePct > 0 ? f2(item.usagePct) + "%" : "—"
+            lines.append(pad(item.code, 8) + pad(item.name, 32) + col(f2(item.tons), 16) + col(useS, 12) + col(priceS, 16) + col(costS, 18) + col(pctS, 10))
         }
-        lines.append(String(repeating: "─", count: 100))
-        lines.append(pad("", 8) + pad("TOPLAM", 32) + col(f2(grandTons), 16) + col("—", 16) + col(grandCost > 0 ? fmtTL(grandCost) : "—", 18) + col("100%", 8))
+        lines.append(String(repeating: "─", count: 112))
+        let grandUsePct = snap.totalProductionTons > 0 ? grandTons / snap.totalProductionTons * 100 : 0
+        lines.append(pad("", 8) + pad("TOPLAM", 32) + col(f2(grandTons), 16) + col(f2(grandUsePct) + "%", 12) + col("—", 16) + col(grandCost > 0 ? fmtTL(grandCost) : "—", 18) + col("100%", 10))
 
         // Per-formula detail
         for e in snap.entries {
@@ -422,7 +465,7 @@ struct MultiBlendExportService {
         if config.showPrice   { COLS += 1 }
         if config.showCost    { COLS += 1 }
         if config.showCostPct { COLS += 1 }
-        COLS = max(COLS, 6)  // at least as wide as shared table
+        COLS = max(COLS, 7)  // at least as wide as shared table
 
         func row(_ cells: String...) {
             var padded = cells
@@ -440,25 +483,20 @@ struct MultiBlendExportService {
         // Shared ingredient table
         row()
         row("ORTAK HAMMADDE AYLIK KARIŞIM KULLANIMI")
-        row("KOD", "HAMMADDE", "KARIŞIM (ton)", "FİYAT (TL/Ton)", "TOPLAM MALİYET (TL)", "%Maliyet")
-        var grandCost = 0.0
-        var grandTons = 0.0
-        var sharedData: [(code: String, name: String, tons: Double, price: Double, cost: Double)] = []
-        for (code, name) in sortedSharedIngs() {
-            let tons  = snap.totalUsageTons(ingCode: code)
-            let price = snap.lib(code)?.priceTL ?? 0
-            let cost  = price > 0 ? tons * price : 0
-            grandCost += cost; grandTons += tons
-            sharedData.append((code, name, tons, price, cost))
-        }
+        row("KOD", "HAMMADDE", "KARIŞIM (ton)", "%Kullanım", "FİYAT (TL/Ton)", "TOPLAM MALİYET (TL)", "%Maliyet")
+        let sharedData = sharedUsageRows()
+        let grandTons  = sharedData.reduce(0.0) { $0 + $1.tons }
+        let grandCost  = sharedData.reduce(0.0) { $0 + $1.cost }
         for item in sharedData {
-            let pct  = grandCost > 0 ? item.cost / grandCost * 100 : 0
             row(item.code, item.name, csvNum(item.tons, 2),
+                item.usagePct > 0 ? csvNum(item.usagePct, 2) + "%" : "",
                 item.price > 0 ? fmtTL(item.price) : "",
                 item.cost  > 0 ? fmtTL(item.cost)  : "",
-                pct > 0 ? csvNum(pct, 1) + "%" : "")
+                item.costPct > 0 ? csvNum(item.costPct, 1) + "%" : "")
         }
-        row("", "TOPLAM", csvNum(grandTons, 2), "", grandCost > 0 ? fmtTL(grandCost) : "", "100%")
+        let grandUsePct = snap.totalProductionTons > 0 ? grandTons / snap.totalProductionTons * 100 : 0
+        row("", "TOPLAM", csvNum(grandTons, 2), csvNum(grandUsePct, 2) + "%", "",
+            grandCost > 0 ? fmtTL(grandCost) : "", "100%")
 
         // Per-formula sections
         for e in snap.entries {
@@ -561,30 +599,25 @@ struct MultiBlendExportService {
             ])
 
             let ingCols: [(String, CGFloat)] = [
-                ("KOD", 45), ("HAMMADDE", 185), ("KARIŞIM (ton)", 90),
-                ("FİYAT (TL/ton)", 100), ("TOPLAM MALİYET (TL)", 110), ("%Maliyet", 60)
+                ("KOD", 45), ("HAMMADDE", 170), ("KARIŞIM (ton)", 85), ("%Kullanım", 70),
+                ("FİYAT (TL/ton)", 95), ("TOPLAM MALİYET (TL)", 110), ("%Maliyet", 60)
             ]
             c.sectionHeader("ORTAK HAMMADDE AYLIK KARIŞIM KULLANIMI")
             c.tableHeader(ingCols)
 
-            var grandCost = 0.0
-            var grandTons = 0.0
-            var sharedItems: [(code: String, name: String, tons: Double, price: Double, cost: Double)] = []
-            for (code, name) in sortedSharedIngs() {
-                let tons  = snap.totalUsageTons(ingCode: code)
-                let price = snap.lib(code)?.priceTL ?? 0
-                let cost  = price > 0 ? tons * price : 0
-                grandCost += cost; grandTons += tons
-                sharedItems.append((code, name, tons, price, cost))
-            }
+            let sharedItems = sharedUsageRows()
+            let grandTons   = sharedItems.reduce(0.0) { $0 + $1.tons }
+            let grandCost   = sharedItems.reduce(0.0) { $0 + $1.cost }
             for (i, item) in sharedItems.enumerated() {
                 let priceS = item.price > 0 ? fmtTL(item.price) : "—"
                 let costS  = item.cost  > 0 ? fmtTL(item.cost)  : "—"
-                let pct    = grandCost > 0 ? item.cost / grandCost * 100 : 0
-                let pctS   = pct > 0 ? f1(pct) + "%" : "—"
-                c.tableRow([item.code, item.name, f2(item.tons), priceS, costS, pctS], ingCols, idx: i)
+                let pctS   = item.costPct  > 0 ? f1(item.costPct)  + "%" : "—"
+                let useS   = item.usagePct > 0 ? f2(item.usagePct) + "%" : "—"
+                c.tableRow([item.code, item.name, f2(item.tons), useS, priceS, costS, pctS], ingCols, idx: i)
             }
-            c.tableTotalRow(["", "TOPLAM", f2(grandTons), "—", grandCost > 0 ? fmtTL(grandCost) : "—", "100%"], ingCols)
+            let grandUsePct = snap.totalProductionTons > 0 ? grandTons / snap.totalProductionTons * 100 : 0
+            c.tableTotalRow(["", "TOPLAM", f2(grandTons), f2(grandUsePct) + "%", "—",
+                             grandCost > 0 ? fmtTL(grandCost) : "—", "100%"], ingCols)
             c.footer()
 
             // ── Per-formula pages ─────────────────────────────────────────
@@ -669,7 +702,164 @@ struct MultiBlendExportService {
         }
     }
 
+    // MARK: - Toplu Hammadde Kullanım Oranı ve Maliyet Raporu (tek başına)
+    //
+    // Formül formül detay içermez — seçili tüm formüllerin TOPLAMINDA her hammaddenin
+    // aylık kaç ton kullanıldığını, toplam üretime oranını, birim fiyatını, aylık
+    // toplam maliyetini ve maliyet payını tek tabloda verir. Ayrıca hangi hammaddenin
+    // hangi formülde ne kadar kullanıldığını gösteren çapraz tablo eklenir.
+
+    func generateSharedUsagePDF() -> Data {
+        let cv = BornPDFCanvas(landscape: true)
+        let df = Self.df()
+        let rows      = sharedUsageRows()
+        let grandTons = rows.reduce(0.0) { $0 + $1.tons }
+        let grandCost = rows.reduce(0.0) { $0 + $1.cost }
+        let totalProd = snap.totalProductionTons
+
+        return cv.render { c in
+            c.banner(title: "BORN OTOMASYON — Toplu Hammadde Kullanım ve Maliyet Raporu",
+                     subtitle: snap.groupName)
+            c.metaBox([
+                ("Grup Adı:",       snap.groupName),
+                ("Formül Sayısı:",  "\(snap.entries.count)"),
+                ("Hammadde Sayısı:", "\(rows.count)"),
+                ("Toplam Üretim:",  "\(f1(totalProd)) ton/ay"),
+                ("Rapor Tarihi:",   df.string(from: Date())),
+                ("Hammadde Maliyeti:", grandCost > 0 ? "\(fmtTL(grandCost)) TL/ay" : "—")
+            ])
+
+            let cols: [(String, CGFloat)] = [
+                ("KOD", 42), ("HAMMADDE", 160), ("FORMÜL", 50), ("KARIŞIM (ton)", 78),
+                ("%Kullanım", 62), ("FİYAT (TL/ton)", 82), ("MALİYET (TL/ay)", 96),
+                ("%Maliyet", 58), ("MIN (t)", 48), ("MAX (t)", 48)
+            ]
+            c.sectionHeader("AYLIK HAMMADDE KULLANIM ORANI VE MALİYETİ")
+            c.tableHeader(cols)
+            for (i, r) in rows.enumerated() {
+                c.tableRow([
+                    r.code, r.name, "\(r.formulaCount)", f2(r.tons),
+                    r.usagePct > 0 ? f2(r.usagePct) + "%" : "—",
+                    r.price > 0 ? fmtTL(r.price) : "—",
+                    r.cost  > 0 ? fmtTL(r.cost)  : "—",
+                    r.costPct > 0 ? f1(r.costPct) + "%" : "—",
+                    r.minTons.map { f1($0) } ?? "—",
+                    r.maxTons.map { f1($0) } ?? "—"
+                ], cols, idx: i)
+            }
+            let grandUsePct = totalProd > 0 ? grandTons / totalProd * 100 : 0
+            c.tableTotalRow(["", "TOPLAM", "", f2(grandTons), f2(grandUsePct) + "%", "—",
+                             grandCost > 0 ? fmtTL(grandCost) : "—", "100%", "", ""], cols)
+
+            // Ortalama ₺/ton mamul
+            if totalProd > 0, grandCost > 0 {
+                c.space(8)
+                c.sectionHeader(
+                    "ORTALAMA HAMMADDE MALİYETİ: \(fmtTL(grandCost / totalProd)) TL / ton mamul"
+                )
+            }
+            c.footer()
+
+            // ── Çapraz tablo: hammadde × formül (ton/ay) ────────────────────
+            guard !snap.entries.isEmpty else { return }
+            c.newPage()
+            c.banner(title: "Hammadde × Formül Kullanım Dağılımı (ton/ay)",
+                     subtitle: snap.groupName)
+
+            // Sayfaya sığdığı kadar formül sütunu — kalanlar sonraki sayfalara
+            let nameW: CGFloat  = 170
+            let perCol: CGFloat = 74
+            let avail  = c.CW - nameW - 80          // 80 = TOPLAM sütunu
+            let maxPer = max(1, Int(avail / perCol))
+
+            var start = 0
+            while start < snap.entries.count {
+                let slice = Array(snap.entries[start..<min(start + maxPer, snap.entries.count)])
+                if start > 0 { c.newPage(); c.banner(title: "Hammadde × Formül Kullanım Dağılımı (devam)", subtitle: snap.groupName) }
+                var xCols: [(String, CGFloat)] = [("HAMMADDE", nameW)]
+                xCols += slice.map { (String($0.code.prefix(10)), perCol) }
+                xCols.append(("TOPLAM", 80))
+                c.tableHeader(xCols)
+                for (i, r) in rows.enumerated() {
+                    var cells = [r.name]
+                    for e in slice {
+                        let t = snap.usageTons(ingCode: r.code, entry: e)
+                        cells.append(t > 0.0005 ? f2(t) : "—")
+                    }
+                    cells.append(f2(r.tons))
+                    c.tableRow(cells, xCols, idx: i)
+                }
+                var totCells = ["TOPLAM"]
+                for e in slice { totCells.append(f1(e.productionTons)) }
+                totCells.append(f1(grandTons))
+                c.tableTotalRow(totCells, xCols)
+                c.footer()
+                start += maxPer
+            }
+        }
+    }
+
+    func generateSharedUsageCSV() -> String {
+        let df   = Self.df()
+        let rows = sharedUsageRows()
+        var out: [String] = []
+        func line(_ cells: [String]) { out.append(cells.map(csvCell).joined(separator: ";")) }
+
+        line(["BORN OTOMASYON — TOPLU HAMMADDE KULLANIM VE MALİYET RAPORU"])
+        line(["Grup Adı", snap.groupName])
+        line(["Rapor Tarihi", df.string(from: Date())])
+        line(["Formül Sayısı", "\(snap.entries.count)"])
+        line(["Hammadde Sayısı", "\(rows.count)"])
+        line(["Toplam Üretim (ton/ay)", csvNum(snap.totalProductionTons, 1)])
+        line([])
+
+        line(["KOD", "HAMMADDE", "KULLANILDIĞI FORMÜL", "KARIŞIM (ton/ay)", "%Kullanım",
+              "FİYAT (TL/ton)", "MALİYET (TL/ay)", "%Maliyet", "AYLIK MIN (ton)", "AYLIK MAX (ton)"])
+        for r in rows {
+            line([r.code, r.name, "\(r.formulaCount)", csvNum(r.tons, 3),
+                  csvNum(r.usagePct, 3), r.price > 0 ? csvNum(r.price, 2) : "",
+                  r.cost > 0 ? csvNum(r.cost, 2) : "", csvNum(r.costPct, 2),
+                  r.minTons.map { csvNum($0, 2) } ?? "", r.maxTons.map { csvNum($0, 2) } ?? ""])
+        }
+        let grandTons = rows.reduce(0.0) { $0 + $1.tons }
+        let grandCost = rows.reduce(0.0) { $0 + $1.cost }
+        let grandUse  = snap.totalProductionTons > 0 ? grandTons / snap.totalProductionTons * 100 : 0
+        line(["", "TOPLAM", "", csvNum(grandTons, 3), csvNum(grandUse, 3), "",
+              csvNum(grandCost, 2), "100", "", ""])
+        if snap.totalProductionTons > 0 {
+            line(["", "ORTALAMA HAMMADDE MALİYETİ (TL/ton mamul)", "", "", "", "",
+                  csvNum(grandCost / snap.totalProductionTons, 2), "", "", ""])
+        }
+
+        // ── Çapraz tablo: hammadde × formül (ton/ay) ──
+        line([])
+        line(["HAMMADDE × FORMÜL KULLANIM DAĞILIMI (ton/ay)"])
+        line(["HAMMADDE"] + snap.entries.map { "\($0.code) — \($0.name)" } + ["TOPLAM"])
+        for r in rows {
+            var cells = [r.name]
+            for e in snap.entries {
+                let t = snap.usageTons(ingCode: r.code, entry: e)
+                cells.append(t > 0.0005 ? csvNum(t, 3) : "")
+            }
+            cells.append(csvNum(r.tons, 3))
+            line(cells)
+        }
+        line(["ÜRETİM (ton/ay)"] + snap.entries.map { csvNum($0.productionTons, 2) } + [csvNum(snap.totalProductionTons, 2)])
+
+        return out.joined(separator: "\r\n")
+    }
+
     // MARK: - File writers
+
+    func writeSharedUsagePDF() -> URL {
+        write(generateSharedUsagePDF(), ext: "pdf", suffix: "_hammadde_kullanim")
+    }
+    func writeSharedUsageCSV() -> URL {
+        var d = Data([0xEF, 0xBB, 0xBF])
+        d.append("sep=;\r\n".data(using: .utf8) ?? Data())
+        d.append(generateSharedUsageCSV().data(using: .utf8) ?? Data())
+        return write(d, ext: "csv", suffix: "_hammadde_kullanim")
+    }
 
     func writeTXT() -> URL { write(generateTXT().data(using: .utf8) ?? Data(), ext: "txt") }
     func writeTransferTXT() -> URL {

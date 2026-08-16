@@ -37,7 +37,7 @@ struct FiyatListesiView: View {
     @State private var shareURL:           URL?  = nil
     @State private var showShare                 = false
     // Üretim sonrası arşivlenecek yayın bilgisi (nil = sadece taslak, kayıt yok)
-    @State private var pendingPublish:     (file: String, prices: [PriceSnap])? = nil
+    @State private var pendingPublish:     (file: String, prices: [PriceSnap], pdf: Data)? = nil
 
     private var vadeConfig: PricingPDFService.VadeConfig {
         PricingPDFService.VadeConfig(
@@ -108,6 +108,9 @@ struct FiyatListesiView: View {
                     }
                 }
 
+                // ── Son yayınlanan listeye göre fark (canlı) ─────────────────
+                liveComparisonSection
+
                 Section {
                     // Taslak — sadece paylaş, kayıt etme
                     Button {
@@ -162,13 +165,118 @@ struct FiyatListesiView: View {
                     fileName:    pub.file,
                     revision:    revision.trimmingCharacters(in: .whitespaces),
                     isPublished: true,
-                    prices:      pub.prices
+                    prices:      pub.prices,
+                    pdfData:     pub.pdf
                 )
                 context.insert(archive)
                 try? context.save()
                 pendingPublish = nil
             }
         }
+    }
+
+    // MARK: - Son yayınlanan listeye göre canlı fark
+
+    /// Bu markanın EN SON yayınlanan listesi — karşılaştırmanın daima baz aldığı liste.
+    private var latestPublished: PriceListArchive? {
+        allArchives.first { $0.brand == brand && $0.isPublished }
+    }
+
+    private struct LiveChange: Identifiable {
+        let id = UUID()
+        let code: String
+        let name: String
+        let oldPesin: Double?    // nil → yeni ürün
+        let newPesin: Double
+        var delta: Double? { oldPesin.map { newPesin - $0 } }
+        var pct:   Double? { guard let o = oldPesin, o > 0 else { return nil }; return (newPesin - o) / o * 100 }
+    }
+
+    private var liveChanges: [LiveChange] {
+        guard let base = latestPublished else { return [] }
+        let oldByCode = Dictionary(base.prices.map { ($0.code, $0.pesin) }, uniquingKeysWith: { a, _ in a })
+        return buildPriceSnaps().map { snap in
+            LiveChange(code: snap.code, name: snap.name,
+                       oldPesin: oldByCode[snap.code], newPesin: snap.pesin)
+        }
+        .sorted {
+            // Değişenler önce (zam oranına göre), yeni ürünler sona
+            let l = $0.pct, r = $1.pct
+            if (l == nil) != (r == nil) { return r == nil }
+            return (l ?? 0) > (r ?? 0)
+        }
+    }
+
+    @ViewBuilder
+    private var liveComparisonSection: some View {
+        if let base = latestPublished {
+            let changes = liveChanges                       // tek hesap — alt ifadeler bunu kullanır
+            let pcts    = changes.compactMap(\.pct)
+            let avgPct  = pcts.isEmpty ? 0 : pcts.reduce(0, +) / Double(pcts.count)
+            let changed = changes.filter { abs($0.delta ?? 0) > 0.001 }
+            Section {
+                LabeledContent("Baz Liste") {
+                    Text(baseLabel(base)).bold().foregroundStyle(.orange)
+                }
+                LabeledContent("Ortalama Fark") {
+                    Text(String(format: "%+.2f%%", avgPct))
+                        .bold()
+                        .foregroundStyle(avgPct > 0.001 ? .red : avgPct < -0.001 ? .green : .secondary)
+                }
+                if changed.isEmpty {
+                    Text("Son yayınlanan listeye göre fiyat değişimi yok.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ForEach(changes) { row in
+                        HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(row.name).font(.subheadline).lineLimit(1)
+                                Text(row.code).font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if let o = row.oldPesin, let d = row.delta, let p = row.pct {
+                                VStack(alignment: .trailing, spacing: 2) {
+                                    HStack(spacing: 4) {
+                                        Text(fmt(o)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                        Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
+                                        Text(fmt(row.newPesin)).font(.subheadline.bold().monospacedDigit())
+                                    }
+                                    Text(String(format: "%+.2f ₺  (%+.2f%%)", d, p))
+                                        .font(.caption2.monospacedDigit())
+                                        .foregroundStyle(d > 0.001 ? .red : d < -0.001 ? .green : .secondary)
+                                }
+                            } else {
+                                VStack(alignment: .trailing, spacing: 2) {
+                                    Text(fmt(row.newPesin)).font(.subheadline.bold().monospacedDigit())
+                                    Text("YENİ").font(.caption2.bold()).foregroundStyle(.blue)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 1)
+                    }
+                }
+            } header: {
+                Text("Son Yayınlanan Listeye Göre Fark")
+            } footer: {
+                Text("Güncel maliyetlerden hesaplanan fiyatlar, \(brand) markasının en son yayınlanan listesiyle karşılaştırılır. Yayınladığınızda bu liste yeni baz olur.")
+                    .font(.caption2)
+            }
+        } else {
+            Section {
+                Text("\(brand) için henüz yayınlanmış liste yok — bu ilk liste baz olarak kaydedilecek.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } header: {
+                Text("Son Yayınlanan Listeye Göre Fark")
+            }
+        }
+    }
+
+    private func baseLabel(_ a: PriceListArchive) -> String {
+        var parts: [String] = []
+        if !a.revision.isEmpty { parts.append("Rev \(a.revision)") }
+        if !a.period.isEmpty   { parts.append(a.period) }
+        parts.append(a.displayDate)
+        return parts.joined(separator: " · ")
     }
 
     // İlk açılışta revizyon önerisi: "YIL-NN" (NN = bu yıl yayınlanan liste sayısı + 1)
@@ -184,19 +292,12 @@ struct FiyatListesiView: View {
 
     // PDF'teki peşin fiyatla birebir aynı hesap — karşılaştırma snapshot'ı
     private func buildPriceSnaps() -> [PriceSnap] {
-        rows.filter { $0.meta?.isVisible ?? true }.map { row in
-            let rasyon = row.formula.currentCostTL > 0 ? row.formula.currentCostTL : row.formula.recordedCostTL
-            let effKar = (row.meta?.overrideKarPct ?? -1) >= 0 ? row.meta!.overrideKarPct : globalKarPct
-            let bagKg  = row.meta?.bagKg ?? 50
-            let calc   = PricingCalc.calculate(
-                rasyon: rasyon, ipCuval: ipCuval, firePct: firePct,
-                elektrik: elektrik, nakliye: nakliye, iscilik: iscilik,
-                karPct: effKar, bagKg: bagKg, extraItems: extraItems
-            )
-            let manual = row.meta?.manualPesin ?? -1
-            let pesin  = manual >= 0 ? manual : calc.pesin
-            return PriceSnap(code: row.formula.code, name: row.formula.name, pesin: pesin)
-        }
+        PriceSnapBuilder.build(
+            rows: rows,
+            ipCuval: ipCuval, firePct: firePct,
+            elektrik: elektrik, nakliye: nakliye, iscilik: iscilik,
+            globalKarPct: globalKarPct, extraItems: extraItems
+        )
     }
 
     // MARK: - PDF üret + paylaş (+ publish ise arşivle)
@@ -229,17 +330,19 @@ struct FiyatListesiView: View {
                 extraItems: capturedExtra
             )
 
-            // Yayınlanıyorsa kalıcı dosya olarak Documents'a yaz
-            var savedFile: String? = nil
-            if publish {
+            // Yayınlanıyorsa kalıcı dosya olarak Documents'a yaz.
+            // `let` ile bağlanır — Swift 6 concurrency'de mutable capture hatası vermesin.
+            let savedFile: String? = {
+                guard publish else { return nil }
                 let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd_HHmm"
                 let dateStr  = df.string(from: Date())
                 let filename = "FiyatListesi_\(capturedBrand)_\(dateStr).pdf"
-                if let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-                    try? data.write(to: docsDir.appendingPathComponent(filename))
-                    savedFile = filename
-                }
-            }
+                guard let docsDir = FileManager.default.urls(for: .documentDirectory,
+                                                             in: .userDomainMask).first
+                else { return nil }
+                try? data.write(to: docsDir.appendingPathComponent(filename))
+                return filename
+            }()
 
             // Paylaşım için geçici URL
             let periodStr = capturedPeriod.isEmpty ? "" : "_\(capturedPeriod)"
@@ -249,7 +352,9 @@ struct FiyatListesiView: View {
                 isGenerating = false
                 shareURL     = tempURL
                 showShare    = tempURL != nil
-                if publish, let savedFile { pendingPublish = (file: savedFile, prices: snaps) }
+                if publish, let savedFile {
+                    pendingPublish = (file: savedFile, prices: snaps, pdf: data)
+                }
             }
         }
     }

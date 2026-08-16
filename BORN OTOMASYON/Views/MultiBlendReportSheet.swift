@@ -119,15 +119,29 @@ struct MultiBlendReportSheet: View {
                     Text("Rapor Ayarları")
                 }
 
+                // ── Toplu hammadde raporu (formül detayı olmadan) ──
+                Section {
+                    exportRow("Toplu Hammadde Raporu — PDF",
+                              "Kullanım oranı + maliyet + hammadde × formül dağılımı",
+                              "doc.richtext.fill", .orange) { share(.sharedPdf) }
+                    exportRow("Toplu Hammadde Raporu — Excel (CSV)",
+                              "Aynı rapor, Excel / Numbers'ta düzenlenebilir",
+                              "tablecells.badge.ellipsis", .teal) { share(.sharedCsv) }
+                } header: {
+                    Text("Toplu Hammadde Kullanım ve Maliyet Raporu")
+                } footer: {
+                    Text("Seçili formüllerin TOPLAMINDA her hammaddenin aylık kaç ton kullanıldığı, toplam üretime oranı (%Kullanım), birim fiyatı, aylık maliyeti ve maliyet payı tek tabloda listelenir.")
+                }
+
                 // ── Export format ──
                 Section {
                     exportRow("PDF olarak dışa aktar",         "A4 yatay, tam detay raporlama",  "doc.richtext.fill",  .red)   { share(.pdf) }
                     exportRow("Excel (CSV) olarak dışa aktar", "Excel / Numbers uyumlu",          "tablecells.fill",    .green)  { share(.csv) }
                     exportRow("Metin (TXT) olarak dışa aktar", "Düz metin, her uygulama açar",   "doc.plaintext.fill", .blue)   { share(.txt) }
                 } header: {
-                    Text("Format Seçin")
+                    Text("Toplu Formül Analiz Raporu")
                 } footer: {
-                    Text("Seçili \(selectedCodes.count) formül raporda yer alır. WhatsApp, E-posta, AirDrop ile paylaşılabilir.")
+                    Text("Seçili \(selectedCodes.count) formülün her biri için hammadde oranları, maliyet dağılımı ve besin kriterleri ayrı sayfada yer alır. WhatsApp, E-posta, AirDrop ile paylaşılabilir.")
                 }
 
                 // ── Cihazlar arası formül aktarımı ──
@@ -212,7 +226,7 @@ struct MultiBlendReportSheet: View {
 
     // MARK: - Share
 
-    private enum Format { case pdf, csv, txt, transferTxt }
+    private enum Format { case pdf, csv, txt, transferTxt, sharedPdf, sharedCsv }
 
     private func share(_ format: Format) {
         guard !selectedCodes.isEmpty else { return }
@@ -234,6 +248,8 @@ struct MultiBlendReportSheet: View {
             case .csv:         url = svc.writeCSV()
             case .txt:         url = svc.writeTXT()
             case .transferTxt: url = svc.writeTransferTXT()
+            case .sharedPdf:   url = svc.writeSharedUsagePDF()
+            case .sharedCsv:   url = svc.writeSharedUsageCSV()
             }
             await MainActor.run {
                 isGenerating = false
